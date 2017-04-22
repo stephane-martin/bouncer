@@ -59,6 +59,19 @@ server {
         proxy_pass_request_body off;
         proxy_set_header Content-Length "";
         proxy_set_header X-Original-URI $request_uri;
+
+        # you can also cache the results on nginx, if there is a hig latency
+        # between the nginx server and the nginx-auth-ldap service.
+
+        # proxy_cache my_auth_zone;
+        # proxy_cache_valid 200 5m;
+        # proxy_cache_key "$http_authorization";
+        # proxy_cache_methods HEAD;
+        # proxy_cache_revalidate off;
+        # proxy_ignore_headers Cache-Control;
+
+        # and define my_auth_zone in a proxy_cache_path
+
     }
 }
 ```
