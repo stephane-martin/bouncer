@@ -385,6 +385,7 @@ func StartHttp(config *conf.GlobalConfig) (*http.Server, chan bool) {
 		}
 	}
 
+<<<<<<< HEAD
 	status_handler := func(w http.ResponseWriter, r *http.Request) {
 		// just reply that the server is alive
 		w.WriteHeader(200)
@@ -453,6 +454,14 @@ func StartHttp(config *conf.GlobalConfig) (*http.Server, chan bool) {
 	mux.HandleFunc("/check", check_handler)
 	if config.Redis.Enabled {
 		mux.HandleFunc("/stats", stats_handler)
+=======
+	done := make(chan bool, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", handler)
+	server := &http.Server{
+		Addr:    fmt.Sprintf("%s:%d", config.Http.BindAddr, config.Http.Port),
+		Handler: mux,
+>>>>>>> defc8ba7deaa6a00e091db9d2f76fe5c9731a2fa
 	}
 
 	done := make(chan bool, 1)
@@ -477,4 +486,7 @@ func StartHttp(config *conf.GlobalConfig) (*http.Server, chan bool) {
 
 	return server, done
 }
+<<<<<<< HEAD
 
+=======
+>>>>>>> defc8ba7deaa6a00e091db9d2f76fe5c9731a2fa

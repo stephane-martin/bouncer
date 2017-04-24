@@ -80,4 +80,6 @@ server {
 
 - Nginx needs to be compiled with the `ngx_http_auth_request_module` module.
 - Golang >= 1.8 (Due to HTTP Server graceful shutdown)
+- Should work on *NIX. Not compatible with Windows.
+
 
