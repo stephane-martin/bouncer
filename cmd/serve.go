@@ -2,12 +2,14 @@ package cmd
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/syslog"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -375,6 +377,13 @@ func StartHttp(config *conf.GlobalConfig) (*http.Server, chan bool) {
 				ev.Result = FAIL_AUTH
 				ev.RetCode = 401
 				if config.Http.FailedAuthDelay > 0 {
+					// in auth context it is good practice to add a bit of random to counter time based attacks
+					n, err := rand.Int(rand.Reader, big.NewInt(1000))
+					if err != nil {
+						log.Log.WithError(err).Error("Error generating random number. Check your rand source.")
+					} else {
+						time.Sleep(time.Duration(n.Int64()) * time.Millisecond)
+					}
 					time.Sleep(time.Duration(config.Http.FailedAuthDelay) * time.Second)
 				}
 			} else {
