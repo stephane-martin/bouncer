@@ -55,6 +55,7 @@ const (
 	FAIL_AUTH
 	INVALID_REQUEST
 	OP_ERROR
+	NO_AUTH
 )
 
 const TOTAL_REQUESTS = "nginx-auth-ldap-nb-total-requests"
@@ -68,6 +69,7 @@ type Measurement struct {
 	Fail int64 `json:"fail"`
 	Invalid int64 `json:"invalid"`
 	OpError int64 `json:"op_error"`
+	NoAuth int64 `json:"no_auth"`
 }
 
 type TotalMeasurement struct {
@@ -77,7 +79,10 @@ type TotalMeasurement struct {
 type Event struct {
 	Username  string `json:"username"`
 	Password  string `json:"-"`
+	Host      string `json:"host"`
 	Uri       string `json:"uri"`
+	Port      string `json:"port"`
+	Proto     string `json:"proto"`
 	RetCode   int    `json:"retcode"`
 	Timestamp int64  `json:"timestamp,string"`
 	Message   string `json:"message"`
@@ -217,7 +222,7 @@ func serve() {
 				config.Redis.Enabled = false
 			} else if config.Redis.Expires > 0 {
 				redis_client = config.GetRedisClient()
-				jan = janitor.NewJanitor(config, redis_client, int(OP_ERROR))
+				jan = janitor.NewJanitor(config, redis_client, int(NO_AUTH))
 				jan.Start()
 			}
 		}
@@ -281,11 +286,14 @@ func serve() {
 func NewEvent(r *http.Request, config *conf.GlobalConfig) (e *Event) {
 	e = &Event{Timestamp: time.Now().UnixNano()}
 	authorization := strings.TrimSpace(r.Header.Get(config.Http.AuthorizationHeader))
+	e.Host = strings.TrimSpace(r.Header.Get(config.Http.OriginalHostHeader))
 	e.Uri = strings.TrimSpace(r.Header.Get(config.Http.OriginalUriHeader))
+	e.Port = strings.TrimSpace(r.Header.Get(config.Http.OriginalPortHeader))
+	e.Proto = strings.TrimSpace(r.Header.Get(config.Http.OriginalProtoHeader))
 
 	if len(authorization) == 0 {
 		e.RetCode = 401
-		e.Result = INVALID_REQUEST
+		e.Result = NO_AUTH
 		e.Message = "No Authorization header in request"
 		return e
 	}
@@ -507,6 +515,16 @@ func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Ser
 				return
 			}
 			measurement.OpError = result
+			measurements = append(measurements, measurement)
+
+			sset = fmt.Sprintf("nginx-auth-ldap-sset-%d", NO_AUTH)
+			result, err = redis_client.ZCount(sset, one_range.Min, one_range.Max).Result()
+			if err != nil {
+				log.Log.WithError(err).Error("Error querying history in Redis")
+				w.WriteHeader(500)
+				return
+			}
+			measurement.NoAuth = result
 			measurements = append(measurements, measurement)
 
 		}

@@ -43,6 +43,9 @@ type HttpConfig struct {
 	AuthorizationHeader string `mapstructure:"authorization_header" toml:"authorization_header"`
 	AuthenticateHeader  string `mapstructure:"authenticate_header" toml:"authenticate_header"`
 	OriginalUriHeader   string `mapstructure:"original_uri_header" toml:"original_uri_header"`
+	OriginalHostHeader  string `mapstructure:"original_host_header" toml:"original_host_header"`
+	OriginalPortHeader  string `mapstructure:"original_port_header" toml:"original_port_header"`
+	OriginalProtoHeader string `mapstructure:"original_proto_header" toml:"original_proto_header"`
 	FailedAuthDelay     uint32 `mapstructure:"failed_auth_delay_seconds" toml:"failed_auth_delay_seconds"`
 	ShutdownTimeout     uint32 `mapstructure:"shutdown_timeout_seconds" toml:"shutdown_timeout_seconds"`
 	Https               bool   `mapstructure:"https" toml:"https"`
@@ -196,6 +199,9 @@ func Load(dirname string) (*GlobalConfig, error) {
 	v.SetDefault("http.authorization_header", "Authorization")
 	v.SetDefault("http.authenticate_header", "WWW-Authenticate")
 	v.SetDefault("http.original_uri_header", "X-Original-Uri")
+	v.SetDefault("http.original_host_header", "X-Forwarded-Host")
+	v.SetDefault("http.original_port_header", "X-Forwarded-Port")
+	v.SetDefault("http.original_proto_header", "X-Forwarded-Proto")
 	v.SetDefault("http.failed_auth_delay_seconds", 2)
 	v.SetDefault("http.shutdown_timeout_seconds", 2)
 	v.SetDefault("http.https", false)
@@ -233,6 +239,9 @@ func Load(dirname string) (*GlobalConfig, error) {
 	v.BindEnv("http.authorization_header", "NAL_AUTHORIZATION")
 	v.BindEnv("http.authenticate_header", "NAL_AUTHENTICATE")
 	v.BindEnv("http.original_uri_header", "NAL_ORIGINAL_URI")
+	v.BindEnv("http.original_host_header", "NAL_ORIGINAL_HOST")
+	v.BindEnv("http.original_proto_header", "NAL_ORIGINAL_PROTO")
+	v.BindEnv("http.original_port_header", "NAL_ORIGINAL_PORT")
 	v.BindEnv("http.failed_auth_delay_seconds", "NAL_FAILED_DELAY")
 	v.BindEnv("http.shutdown_timeout_seconds", "NAL_SHUTDOWN_TIMEOUT")
 	v.BindEnv("http.https", "NAL_HTTPS")

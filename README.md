@@ -17,7 +17,6 @@ The dependencies are vendored.
 
 See [the configuration example](https://github.com/stephane-martin/nginx-auth-ldap/blob/master/nginx-auth-ldap.example.toml).
 
-
 The configuration directory can be specified by a commandline flag
 `--config=XXX` (it defaults to `/etc`).
 
@@ -44,6 +43,18 @@ Send SIGTERM or SIGINT to the process.
 
 Send SIGHUP to the process.
 
+# Health check
+
+`curl -I http://NGINX_AUTH_LDAP:PORT/check`
+
+# Stats
+
+Redis is needed to store the requests logs that we use to make the stats. Enable
+it in configuration.
+
+Then: `curl http://NGINX_AUTH_LDAP:PORT/stats`
+
+
 # Nginx configuration example
 
 ```nginx
@@ -55,10 +66,18 @@ server {
 
     location = /_auth {
         internal;
+        # A.B.C.D: Listen IP for nginx-auth-ldap
         proxy_pass http://A.B.C.D:PORT;
         proxy_pass_request_body off;
         proxy_set_header Content-Length "";
+
+        # pass some information to nginx-auth-ldap about the incoming request
+        # (useful for logs)
+        proxy_set_header X-Forwarded-Server $http_host;
+        proxy_set_header X-Forwarded-Host $http_host:443;
         proxy_set_header X-Original-URI $request_uri;
+        proxy_set_header X-Forwarded-Port 443;
+        proxy_set_header X-Forwarded-Proto https;
 
         # you can also cache the results on nginx, if there is a hig latency
         # between the nginx server and the nginx-auth-ldap service.
@@ -70,7 +89,7 @@ server {
         # proxy_cache_revalidate off;
         # proxy_ignore_headers Cache-Control;
 
-        # and define my_auth_zone in a proxy_cache_path
+        # ... and define my_auth_zone in a proxy_cache_path
 
     }
 }
