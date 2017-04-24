@@ -221,7 +221,7 @@ func start_server(config *conf.GlobalConfig) (*http.Server, chan bool) {
 			mac := hmac.New(sha256.New, secret)
 			mac.Write(decoded)
 			mac_bytes = mac.Sum(nil)
-			cached_item, found := auth_cache.Get("username")
+			cached_item, found := auth_cache.Get(username)
 			if found {
 				if hmac.Equal(mac_bytes, cached_item.([]byte)) {
 					log.Log.WithField("username", username).WithField("uri", original_uri).Debug("Auth is successfull (cached)")
@@ -236,7 +236,7 @@ func start_server(config *conf.GlobalConfig) (*http.Server, chan bool) {
 		if err == nil {
 			log.Log.WithField("username", username).WithField("uri", original_uri).Debug("Auth is successfull")
 			if auth_cache != nil {
-				auth_cache.Add("username", mac_bytes, cache.DefaultExpiration)
+				auth_cache.Add(username, mac_bytes, cache.DefaultExpiration)
 			}
 			w.WriteHeader(200)
 			return
@@ -250,8 +250,6 @@ func start_server(config *conf.GlobalConfig) (*http.Server, chan bool) {
 			return
 		}
 	}
-
-
 
 	done := make(chan bool, 1)
 	mux := http.NewServeMux()
@@ -283,5 +281,3 @@ func start_server(config *conf.GlobalConfig) (*http.Server, chan bool) {
 	return server, done
 
 }
-
-
