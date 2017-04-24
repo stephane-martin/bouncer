@@ -2,10 +2,12 @@ package conf
 
 import (
 	"bytes"
+	"crypto/rand"
 	"fmt"
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	"github.com/go-redis/redis"
 	"github.com/hashicorp/errwrap"
 	"github.com/spf13/viper"
 	"github.com/stephane-martin/nginx-auth-ldap/log"
@@ -15,6 +17,7 @@ type GlobalConfig struct {
 	Ldap  LdapConfig  `mapstructure:"ldap" toml:"ldap"`
 	Http  HttpConfig  `mapstructure:"http" toml:"http"`
 	Cache CacheConfig `mapstructure:"cache" toml:"cache"`
+	Redis RedisConfig `mapstructure:"redis" toml:"redis"`
 }
 
 type LdapConfig struct {
@@ -40,8 +43,8 @@ type HttpConfig struct {
 	AuthorizationHeader string `mapstructure:"authorization_header" toml:"authorization_header"`
 	AuthenticateHeader  string `mapstructure:"authenticate_header" toml:"authenticate_header"`
 	OriginalUriHeader   string `mapstructure:"original_uri_header" toml:"original_uri_header"`
-	FailedAuthDelay     uint32 `mapstructure:"failed_auth_delay_secs" toml:"failed_auth_delay_secs"`
-	ShutdownTimeout     uint32 `mapstructure:"shutdown_timeout_secs" toml:"shutdown_timeout_secs"`
+	FailedAuthDelay     uint32 `mapstructure:"failed_auth_delay_seconds" toml:"failed_auth_delay_seconds"`
+	ShutdownTimeout     uint32 `mapstructure:"shutdown_timeout_seconds" toml:"shutdown_timeout_seconds"`
 	Https               bool   `mapstructure:"https" toml:"https"`
 	Certificate         string `mapstructure:"certificate" toml:"certificate"`
 	Key                 string `mapstructure:"key" toml:"key"`
@@ -50,6 +53,16 @@ type HttpConfig struct {
 type CacheConfig struct {
 	Expires int32  `mapstructure:"expires_seconds" toml:"expires_seconds"`
 	Secret  string `mapstructure:"secret" toml:"secret"`
+}
+
+type RedisConfig struct {
+	Host     string `mapstructure:"host" toml:"host"`
+	Port     uint32 `mapstructure:"port" toml:"port"`
+	Database uint8  `mapstructure:"database" toml:"database"`
+	Password string `mapstructure:"password" toml:"password"`
+	Poolsize uint32 `mapstructure:"poolsize" toml:"poolsize"`
+	Enabled  bool   `mapstructure:"enabled" toml:"enabled"`
+	Expires  int32  `mapstructure:"expires_seconds" toml:"expires_seconds"`
 }
 
 func New() *GlobalConfig {
@@ -65,6 +78,42 @@ func (c *GlobalConfig) Export() string {
 	encoder := toml.NewEncoder(buf)
 	encoder.Encode(*c)
 	return buf.String()
+}
+
+func (c *GlobalConfig) CheckRedisConn() error {
+	conn := c.GetRedisClient()
+	defer conn.Close()
+	return conn.Ping().Err()
+}
+
+func (c *GlobalConfig) GetRedisOptions() (opts *redis.Options) {
+	opts = &redis.Options{
+		Addr:     fmt.Sprintf("%s:%d", c.Redis.Host, c.Redis.Port),
+		Network:  "tcp",
+		DB:       int(c.Redis.Database),
+		PoolSize: int(c.Redis.Poolsize),
+	}
+	if len(c.Redis.Password) > 0 {
+		opts.Password = c.Redis.Password
+	}
+	return opts
+}
+
+func (c *GlobalConfig) GetRedisClient() *redis.Client {
+	return redis.NewClient(c.GetRedisOptions())
+}
+
+func (c *GlobalConfig) GenerateSecret() (secret []byte, err error) {
+	if len(c.Cache.Secret) == 0 {
+		secret = make([]byte, 32)
+		_, err = rand.Read(secret)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		secret = []byte(c.Cache.Secret)
+	}
+	return secret, nil
 }
 
 func (c *GlobalConfig) Check() error {
@@ -97,20 +146,28 @@ func (c *GlobalConfig) Check() error {
 	case "tls":
 	default:
 		return fmt.Errorf("LDAP tls_type must be 'none', 'starttls' or 'tls'")
-	}	
+	}
 
-	if (c.Ldap.TlsType == "tls" || c.Ldap.TlsType == "starttls") {
+	if c.Ldap.TlsType == "tls" || c.Ldap.TlsType == "starttls" {
 		if !c.Ldap.Insecure && len(c.Ldap.CA) == 0 {
 			return fmt.Errorf("Specify the certificate authority 'ldap.certificate_authority' that is used to verify the LDAP server certificate")
 		}
 	}
 
-	if (c.Http.Port == 0) {
+	if c.Http.Port == 0 {
 		return fmt.Errorf("HTTP port can't be 0")
 	}
 
 	if c.Http.Https && (len(c.Http.Certificate) == 0 || len(c.Http.Key) == 0) {
 		return fmt.Errorf("HTTPS is active: specify the HTTPS certificate and the HTTPS private key")
+	}
+
+	if c.Redis.Port == 0 {
+		return fmt.Errorf("Redis port can't be 0")
+	}
+
+	if c.Redis.Poolsize == 0 {
+		return fmt.Errorf("Redis pool size can't be 0")
 	}
 
 	return nil
@@ -139,14 +196,22 @@ func Load(dirname string) (*GlobalConfig, error) {
 	v.SetDefault("http.authorization_header", "Authorization")
 	v.SetDefault("http.authenticate_header", "WWW-Authenticate")
 	v.SetDefault("http.original_uri_header", "X-Original-Uri")
-	v.SetDefault("http.failed_auth_delay_secs", 2)
-	v.SetDefault("http.shutdown_timeout_secs", 2)
+	v.SetDefault("http.failed_auth_delay_seconds", 2)
+	v.SetDefault("http.shutdown_timeout_seconds", 2)
 	v.SetDefault("http.https", false)
 	v.SetDefault("http.certificate", "")
 	v.SetDefault("http.key", "")
 
 	v.SetDefault("cache.expires_seconds", 300)
 	v.SetDefault("cache.secret", "")
+
+	v.SetDefault("redis.host", "127.0.0.1")
+	v.SetDefault("redis.port", 6379)
+	v.SetDefault("redis.database", 0)
+	v.SetDefault("redis.password", "")
+	v.SetDefault("redis.poolsize", 10)
+	v.SetDefault("redis.enabled", false)
+	v.SetDefault("redis.expires_seconds", 86400)
 
 	v.BindEnv("ldap.host", "NAL_LDAP_HOST")
 	v.BindEnv("ldap.port", "NAL_LDAP_PORT")
@@ -168,14 +233,22 @@ func Load(dirname string) (*GlobalConfig, error) {
 	v.BindEnv("http.authorization_header", "NAL_AUTHORIZATION")
 	v.BindEnv("http.authenticate_header", "NAL_AUTHENTICATE")
 	v.BindEnv("http.original_uri_header", "NAL_ORIGINAL_URI")
-	v.BindEnv("http.failed_auth_delay_secs", "NAL_FAILED_DELAY")
-	v.BindEnv("http.shutdown_timeout_secs", "NAL_SHUTDOWN_TIMEOUT")
+	v.BindEnv("http.failed_auth_delay_seconds", "NAL_FAILED_DELAY")
+	v.BindEnv("http.shutdown_timeout_seconds", "NAL_SHUTDOWN_TIMEOUT")
 	v.BindEnv("http.https", "NAL_HTTPS")
 	v.BindEnv("http.certificate", "NAL_HTTPS_CERTIFICATE")
 	v.BindEnv("http.key", "NAL_HTTPS_KEY")
 
 	v.BindEnv("cache.expires_seconds", "NAL_CACHE_EXPIRES")
 	v.BindEnv("cache.secret", "NAL_CACHE_SECRET")
+
+	v.BindEnv("redis.host", "NAL_REDIS_HOST")
+	v.BindEnv("redis.port", "NAL_REDIS_PORT")
+	v.BindEnv("redis.database", "NAL_REDIS_DATABASE")
+	v.BindEnv("redis.password", "NAL_REDIS_PASSWORD")
+	v.BindEnv("redis.poolsize", "NAL_REDIS_POOLSIZE")
+	v.BindEnv("redis.enabled", "NAL_REDIS_ENABLED")
+	v.BindEnv("redis.expires_seconds", "NAL_REDIS_EXPIRES")
 
 	v.SetConfigName("nginx-auth-ldap")
 

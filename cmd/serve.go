@@ -3,9 +3,9 @@ package cmd
 import (
 	"context"
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log/syslog"
 	"net"
@@ -15,10 +15,13 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"strconv"
 
 	"github.com/Sirupsen/logrus"
 	logrus_syslog "github.com/Sirupsen/logrus/hooks/syslog"
 	"github.com/facebookgo/pidfile"
+	"github.com/go-redis/redis"
+	"github.com/hashicorp/errwrap"
 	cache "github.com/patrickmn/go-cache"
 	"github.com/spf13/cobra"
 	"github.com/stephane-martin/nginx-auth-ldap/auth"
@@ -37,12 +40,85 @@ subrequests.`,
 	},
 }
 
+var one_minute int64 = 60000000000
+var one_hour int64 = 3600000000000
+var one_day int64 = 86400000000000
+
+type Result uint8
+
+const (
+	SUCCESS_AUTH Result = iota
+	SUCCESS_AUTH_CACHE
+	FAIL_AUTH
+	INVALID_REQUEST
+	OP_ERROR
+)
+
+type Event struct {
+	Username  string `json:"username"`
+	Password  string `json:"-"`
+	Uri       string `json:"uri"`
+	RetCode   int    `json:"retcode"`
+	Timestamp int64  `json:"timestamp,string"`
+	Message   string `json:"message"`
+	Result    Result `json:"result"`
+}
+
+func (e *Event) hmac(secret []byte) []byte {
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(e.Username))
+	mac.Write([]byte(":"))
+	mac.Write([]byte(e.Password))
+	return mac.Sum(nil)
+}
+
+func (e *Event) log() {
+	l := log.Log.WithField("username", e.Username).WithField("uri", e.Uri).WithField("retcode", e.RetCode).WithField("result", e.Result)
+	if e.RetCode == 200 {
+		l.Debug(e.Message)
+	} else if e.RetCode == 500 {
+		l.Warn(e.Message)
+	} else {
+		l.Info(e.Message)
+	}
+}
+
+func (e *Event) write(w http.ResponseWriter, config *conf.GlobalConfig) {
+	if e.RetCode == 401 {
+		w.Header().Add(config.Http.AuthenticateHeader, fmt.Sprintf("Basic realm=\"%s\"", config.Http.Realm))
+	}
+	w.WriteHeader(e.RetCode)
+}
+
+func (e *Event) notify() {
+	if e.RetCode == 500 {
+		// signal myself that an unexpected problem happened
+		p, _ := os.FindProcess(os.Getpid())
+		p.Signal(syscall.SIGHUP)
+	}
+}
+
+func (e *Event) store(client *redis.Client) {
+	set := fmt.Sprintf("nginx-auth-ldap-sset-%d", e.Result)
+	score := float64(e.Timestamp)
+	value, err := json.Marshal(*e)
+	if err == nil {
+		pipe := client.TxPipeline()
+		pipe.ZAdd(set, redis.Z{Score: score, Member: value})
+		pipe.Incr("nginx-auth-ldap-nb-total-requests")
+		_, err = pipe.Exec()
+		if err != nil {
+			log.Log.WithError(err).Error("Error writing an event to Redis")
+		}
+	} else {
+		log.Log.WithError(err).Error("Error marshalling an event to JSON (should not happen!!!)")
+	}
+
+}
+
 func init() {
 	RootCmd.AddCommand(serveCmd)
 }
-
-var auth_cache *cache.Cache
-var secret []byte
 
 func serve() {
 	disable_timestamps := false
@@ -93,174 +169,293 @@ func serve() {
 		}()
 	}
 
+	// prevent SIGHUP to stop the program in all cases
+	signal.Ignore(syscall.SIGHUP)
+
 	restart := true
 	for restart {
 		config, err := conf.Load(ConfigDir)
 		if err != nil {
-			log.Log.WithError(err).Error("Error loading configuration")
-			os.Exit(-1)
+			log.Log.WithError(err).Error("Error loading configuration. Sleeping a while and restarting.")
+			time.Sleep(time.Duration(30) * time.Second)
+			break
 		}
-
-		if config.Cache.Expires > 0 {
-			expires := time.Duration(config.Cache.Expires) * time.Second
-			auth_cache = cache.New(expires, 10*expires)
-			if len(config.Cache.Secret) == 0 {
-				secret = make([]byte, 32)
-				_, err := rand.Read(secret)
-				if err != nil {
-					log.Log.WithError(err).Error("Error generating a secret")
-					os.Exit(-1)
-				}
-			} else {
-				secret = []byte(config.Cache.Secret)
+		if config.Redis.Enabled {
+			err = config.CheckRedisConn()
+			if err != nil {
+				log.Log.WithError(err).Error("Connection to Redis failed. Stats won't be available.")
+				config.Redis.Enabled = false
 			}
 		}
+		err = auth.CheckLdapConn(config)
+		if err != nil {
+			log.Log.WithError(err).Error("Connection to LDAP failed. Sleeping a while and restarting.")
+			time.Sleep(time.Duration(30) * time.Second)
+			break
+		}
 
+		// install signal handlers
 		sig_chan := make(chan os.Signal, 1)
 		signal.Notify(sig_chan, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 
-		server, done := start_server(config)
+		server, done := StartHttp(config)
 		select {
-
+		// wait for either a signal, or that the HTTP server stops
 		case <-done:
-			// abrupt termination of the HTTP server
+			// stop signal handlers
 			signal.Stop(sig_chan)
 			close(sig_chan)
-			restart = false
+			log.Log.Error("Abrupt termination of the HTTP server. Sleeping a while and restarting.")
+			time.Sleep(time.Duration(30) * time.Second)
 
 		case sig := <-sig_chan:
+			// stop signal handlers... in both cases
 			signal.Stop(sig_chan)
 			close(sig_chan)
 
-			var c context.Context
-			var f context.CancelFunc
+			var ctx context.Context
+			var cancel_ctx context.CancelFunc
 			if config.Http.ShutdownTimeout > 0 {
-				c, f = context.WithTimeout(context.Background(), time.Duration(config.Http.ShutdownTimeout)*time.Second)
-				defer f()
+				ctx, cancel_ctx = context.WithTimeout(context.Background(), time.Duration(config.Http.ShutdownTimeout)*time.Second)
 			}
 
 			switch sig {
 			case syscall.SIGTERM:
-				log.Log.Info("SIGTERM received")
-				server.Shutdown(c)
+				log.Log.Info("SIGTERM received: stopping the HTTP server")
+				server.Shutdown(ctx)
 				<-done
 				restart = false
 			case syscall.SIGINT:
-				log.Log.Info("SIGINT received")
-				server.Shutdown(c)
+				log.Log.Info("SIGINT received: stopping the HTTP server")
+				server.Shutdown(ctx)
 				<-done
 				restart = false
 			case syscall.SIGHUP:
 				log.Log.Info("SIGHUP received: reloading configuration and restart the HTTP server")
-				server.Shutdown(c)
+				server.Shutdown(ctx)
 				<-done
 			default:
-				server.Shutdown(c)
+				server.Shutdown(ctx)
 				<-done
 				restart = false
 			}
+			if config.Http.ShutdownTimeout > 0 {
+				cancel_ctx()
+			}
 		}
 		close(done)
-
 	}
 }
 
-func start_server(config *conf.GlobalConfig) (*http.Server, chan bool) {
+func NewEvent(r *http.Request, config *conf.GlobalConfig) (e *Event) {
+	e = &Event{Timestamp: time.Now().UnixNano()}
+	authorization := strings.TrimSpace(r.Header.Get(config.Http.AuthorizationHeader))
+	e.Uri = strings.TrimSpace(r.Header.Get(config.Http.OriginalUriHeader))
 
-	handler := func(w http.ResponseWriter, r *http.Request) {
-		var mac_bytes []byte
-
-		authorization := strings.TrimSpace(r.Header.Get(config.Http.AuthorizationHeader))
-		original_uri := strings.TrimSpace(r.Header.Get(config.Http.OriginalUriHeader))
-		realm := fmt.Sprintf("Basic realm=\"%s\"", config.Http.Realm)
-
-		if len(authorization) == 0 {
-			log.Log.Debug("No Authorization header in request")
-			w.Header().Add(config.Http.AuthenticateHeader, realm)
-			w.WriteHeader(401)
-			return
-		}
-		splits := strings.Split(authorization, " ")
-		if len(splits) != 2 {
-			log.Log.Debug("Authorization header is present but has a bad format")
-			w.WriteHeader(400)
-			return
-		}
-		if splits[0] != "Basic" {
-			log.Log.Debug("Authorization header is present but does not begin with 'Basic'")
-			w.WriteHeader(400)
-			return
-		}
-		encoded := splits[1]
-		if len(encoded) == 0 {
-			log.Log.Debug("The encoded base64 is empty")
-			w.WriteHeader(400)
-			return
-		}
-		decoded, err := base64.StdEncoding.DecodeString(encoded)
-		if err != nil {
-			log.Log.Debug("Not properly base64 encoded")
-			w.WriteHeader(400)
-			return
-		}
-		splits = strings.Split(string(decoded), ":")
-		if len(splits) != 2 {
-			log.Log.Debug("The decoded base64 does not contain a ':'")
-			w.WriteHeader(400)
-			return
-		}
-		username := strings.TrimSpace(splits[0])
-		password := strings.TrimSpace(splits[1])
-		if len(username) == 0 || len(password) == 0 {
-			log.Log.Debug("Empty username or empty password")
-			w.Header().Add(config.Http.AuthenticateHeader, realm)
-			w.WriteHeader(401)
-			return
-		}
-		if auth_cache != nil {
-			mac := hmac.New(sha256.New, secret)
-			mac.Write(decoded)
-			mac_bytes = mac.Sum(nil)
-			cached_item, found := auth_cache.Get("username")
-			if found {
-				if hmac.Equal(mac_bytes, cached_item.([]byte)) {
-					log.Log.WithField("username", username).WithField("uri", original_uri).Debug("Auth is successfull (cached)")
-					w.WriteHeader(200)
-					return
-				}
-			}
-
-		}
-
-		err = auth.Authenticate(username, password, config)
-		if err == nil {
-			log.Log.WithField("username", username).WithField("uri", original_uri).Debug("Auth is successfull")
-			if auth_cache != nil {
-				auth_cache.Add("username", mac_bytes, cache.DefaultExpiration)
-			}
-			w.WriteHeader(200)
-			return
-		} else {
-			log.Log.WithError(err).WithField("username", username).WithField("uri", original_uri).Info("Auth failed")
-			if config.Http.FailedAuthDelay > 0 {
-				time.Sleep(time.Duration(config.Http.FailedAuthDelay) * time.Second)
-			}
-			w.Header().Add(config.Http.AuthenticateHeader, realm)
-			w.WriteHeader(401)
-			return
-		}
+	if len(authorization) == 0 {
+		e.RetCode = 401
+		e.Result = INVALID_REQUEST
+		e.Message = "No Authorization header in request"
+		return e
 	}
+	splits := strings.Split(authorization, " ")
+	if len(splits) != 2 {
+		e.RetCode = 400
+		e.Result = INVALID_REQUEST
+		e.Message = "Authorization header is present but has a bad format"
+		return e
+	}
+	if splits[0] != "Basic" {
+		e.RetCode = 400
+		e.Result = INVALID_REQUEST
+		e.Message = "Authorization header is present but does not begin with 'Basic'"
+		return e
+	}
+	encoded := splits[1]
+	if len(encoded) == 0 {
+		e.RetCode = 400
+		e.Result = INVALID_REQUEST
+		e.Message = "The encoded base64 is empty"
+		return e
+	}
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		e.RetCode = 400
+		e.Result = INVALID_REQUEST
+		e.Message = "Not properly base64 encoded"
+		return e
+	}
+	splits = strings.Split(string(decoded), ":")
+	if len(splits) != 2 {
+		e.RetCode = 400
+		e.Result = INVALID_REQUEST
+		e.Message = "The decoded base64 does not contain a ':'"
+		return e
+	}
+	e.Username = strings.TrimSpace(splits[0])
+	e.Password = strings.TrimSpace(splits[1])
+	if len(e.Username) == 0 || len(e.Password) == 0 {
+		e.RetCode = 401
+		e.Result = FAIL_AUTH
+		e.Message = "Empty username or empty password"
+		return e
+	}
+	return e
+}
 
+func StartHttp(config *conf.GlobalConfig) (*http.Server, chan bool) {
 
-
-	done := make(chan bool, 1)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", handler)
 	server := &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", config.Http.BindAddr, config.Http.Port),
 		Handler: mux,
 	}
 
+	var secret []byte
+	var err error
+	var auth_cache *cache.Cache
+
+	if config.Cache.Expires > 0 {
+		expires := time.Duration(config.Cache.Expires) * time.Second
+		auth_cache = cache.New(expires, 10*expires)
+		secret, err = config.GenerateSecret()
+		if err != nil {
+			log.Log.WithError(err).Fatal("Error generating secret!!!")
+		}
+	}
+
+	var redis_client *redis.Client
+	if config.Redis.Enabled {
+		redis_client = config.GetRedisClient()
+	}
+
+	main_handler := func(w http.ResponseWriter, r *http.Request) {
+		var hmac_b []byte
+
+		ev := NewEvent(r, config)
+		defer ev.notify()
+		defer ev.log()
+		defer ev.write(w, config)
+		if config.Redis.Enabled {
+			defer ev.store(redis_client)
+		}
+
+		if ev.RetCode != 0 {
+			return
+		}
+
+		if auth_cache != nil {
+			hmac_b = ev.hmac(secret)
+			cached_hmac_b, found := auth_cache.Get(ev.Username)
+			if found {
+				if hmac.Equal(hmac_b, cached_hmac_b.([]byte)) {
+					ev.Message = "Auth is successful (cached)"
+					ev.Result = SUCCESS_AUTH_CACHE
+					ev.RetCode = 200
+					return
+				}
+			}
+		}
+
+		err := auth.Authenticate(ev.Username, ev.Password, config)
+		if err == nil {
+			ev.Message = "Auth is succesful (not cached)"
+			ev.Result = SUCCESS_AUTH
+			ev.RetCode = 200
+			if auth_cache != nil {
+				auth_cache.Add(ev.Username, hmac_b, cache.DefaultExpiration)
+			}
+		} else {
+			if errwrap.ContainsType(err, new(auth.LdapOpError)) {
+				ev.Message = fmt.Sprintf("LDAP operational error: %s", err.Error())
+				ev.Result = OP_ERROR
+				ev.RetCode = 500
+			} else if errwrap.ContainsType(err, new(auth.LdapAuthError)) {
+				ev.Message = "Auth failed"
+				ev.Result = FAIL_AUTH
+				ev.RetCode = 401
+				if config.Http.FailedAuthDelay > 0 {
+					time.Sleep(time.Duration(config.Http.FailedAuthDelay) * time.Second)
+				}
+			} else {
+				ev.Message = fmt.Sprintf("Unexpected error: %s", err.Error())
+				ev.Result = OP_ERROR
+				ev.RetCode = 500
+			}
+		}
+	}
+
+	status_handler := func(w http.ResponseWriter, r *http.Request) {
+		// just reply that the server is alive
+		w.WriteHeader(200)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write([]byte("<html><head><title>nginx-auth-ldap</title></head><body><h1>nginx-auth-ldap is running</h1></body></html>"))
+		return
+	}
+
+	check_handler := func(w http.ResponseWriter, r *http.Request) {
+		if auth.CheckLdapConn(config) != nil {
+			// we have a connection problem to LDAP...
+			// first reply that the health check is negative
+			w.WriteHeader(500)
+			// then send signal to myself to stop the HTTP server
+			p, _ := os.FindProcess(os.Getpid())
+			p.Signal(syscall.SIGHUP)
+		} else {
+			// we're alive
+			w.WriteHeader(200)
+		}
+	}
+
+	stats_handler := func(w http.ResponseWriter, r *http.Request) {
+		// report statistics
+		now := time.Now().UnixNano()
+		now_s := strconv.FormatInt(now, 10)
+		one_minute_ago := strconv.FormatInt(now - one_minute, 10)
+		one_hour_ago := strconv.FormatInt(now - one_hour, 10)
+		one_day_ago := strconv.FormatInt(now - one_day, 10)
+
+		range_minute := redis.ZRangeBy{Min: one_minute_ago, Max: now_s}
+		range_hour := redis.ZRangeBy{Min: one_hour_ago, Max: now_s}
+		range_day := redis.ZRangeBy{Min: one_day_ago, Max: now_s}
+
+		all_ranges := map[string]redis.ZRangeBy{
+			"minute": range_minute,
+			"hour": range_hour,
+			"day": range_day,
+		}
+
+
+		for rtype := 0; rtype <= int(OP_ERROR); rtype++ {
+			sset := fmt.Sprintf("nginx-auth-ldap-sset-%d", rtype)
+			for period, one_range := range all_ranges {
+				results, err := redis_client.ZRangeByScore(sset, one_range).Result()
+				if err != nil {
+					w.WriteHeader(500)
+					log.Log.WithError(err).Error("Error querying history in Redis")
+					return
+				}
+				fmt.Println(rtype)
+				fmt.Println(period)
+				fmt.Println(len(results))
+				/*
+				for _, result := range results_min {
+					fmt.Println(result)	
+				}
+				*/
+			}
+		}
+		w.WriteHeader(200)
+	}
+
+	mux.HandleFunc("/", main_handler)
+	mux.HandleFunc("/status", status_handler)
+	mux.HandleFunc("/check", check_handler)
+	if config.Redis.Enabled {
+		mux.HandleFunc("/stats", stats_handler)
+	}
+
+	done := make(chan bool, 1)
 	go func() {
 		log.Log.WithField("bind", server.Addr).Info("Starting HTTP server")
 		var err error
@@ -272,7 +467,7 @@ func start_server(config *conf.GlobalConfig) (*http.Server, chan bool) {
 		if err != nil {
 			switch err := err.(type) {
 			default:
-				log.Log.WithError(err).Info("HTTP server error. Probably normal.")
+				log.Log.WithError(err).Info("HTTP server error. (Probably normal)")
 			case *net.OpError:
 				log.Log.WithError(err).Error("HTTP server operational error")
 			}
@@ -281,7 +476,5 @@ func start_server(config *conf.GlobalConfig) (*http.Server, chan bool) {
 	}()
 
 	return server, done
-
 }
-
 

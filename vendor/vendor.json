@@ -49,6 +49,13 @@
 			"revisionTime": "2017-03-29T04:21:07Z"
 		},
 		{
+			"checksumSHA1": "vvDXyXRJLrPfg1iDNHJ1WlA7cHo=",
+			"path": "github.com/go-redis/redis",
+			"revision": "2528e7a712d313b85173f4c677278c8e6270bb23",
+			"revisionTime": "2017-04-22T08:28:27Z",
+			"tree": true
+		},
+		{
 			"checksumSHA1": "cdOCt0Yb+hdErz8NAQqayxPmRsY=",
 			"path": "github.com/hashicorp/errwrap",
 			"revision": "7554cd9344cec97297fa6649b055a8c98c2a1e55",
