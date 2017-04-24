@@ -40,7 +40,7 @@ func Search(username string, password string, config *conf.GlobalConfig) error {
 	}
 
 	if len(result.Entries) != 1 {
-		return errwrap.Wrapf("User does not exist in LDAP (or too many entries returned)", &LdapAuthError{err})
+		return &LdapAuthError{fmt.Errorf("User does not exist in LDAP (or too many entries returned")}
 	}
 
 	userdn := result.Entries[0].DN

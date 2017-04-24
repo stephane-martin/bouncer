@@ -62,7 +62,7 @@ type RedisConfig struct {
 	Password string `mapstructure:"password" toml:"password"`
 	Poolsize uint32 `mapstructure:"poolsize" toml:"poolsize"`
 	Enabled  bool   `mapstructure:"enabled" toml:"enabled"`
-	Expires  int32  `mapstructure:"expires_seconds" toml:"expires_seconds"`
+	Expires  int64  `mapstructure:"expires_seconds" toml:"expires_seconds"`
 }
 
 func New() *GlobalConfig {

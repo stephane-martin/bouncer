@@ -62,9 +62,9 @@ authenticate_header = "WWW-Authenticate" # default "WWW-Authenticate"
 # The header name that Nginx uses to forward the requested URI (used in logging)
 original_uri_header = "X-Original-Uri" # default "X-Original-Uri" (beware of golang upcase normalization...)
 # When the authentication fails, force the client to wait N seconds (put 0 to disable)
-failed_auth_delay_secs = 2 # default 2
+failed_auth_delay_seconds = 2 # default 2
 # Timeout for the HTTP shutdown, in seconds
-shutdown_timeout_secs = 2 # default 2
+shutdown_timeout_seconds = 2 # default 2
 # Whether to use HTTPS
 https = false # default false
 # if using HTTPS, provide the path to the certificate and the path to the private_key
@@ -87,4 +87,24 @@ expires_seconds = 300 # default 300
 # 'secret' is the secret used by the HMAC
 # if 'secret' is empty, a random secret will be generated
 secret = "" # default ""
+
+[redis]
+# if enabled, we will log the incoming requests in redis to be able to provide
+# statistics. Default `false`.
+enabled = false
+# redis host
+host = "127.0.0.1"
+# redis port
+port = 6379
+# redis database number
+database = 0
+# redis password (leave empty for anonymous)
+password = ""
+# nginx-auth-ldap uses go-redis with a pool of connections to Redis. Size of
+# the pool.
+poolsize = 10
+# each incoming request is logged in a sorted set in redis.
+# if expires_seconds is > 0, requests older than that number of seconds will
+# be purged
+expires_seconds = 86400
 

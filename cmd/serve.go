@@ -2,8 +2,8 @@ package cmd
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -14,10 +14,10 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
-	"strconv"
 
 	"github.com/Sirupsen/logrus"
 	logrus_syslog "github.com/Sirupsen/logrus/hooks/syslog"
@@ -28,6 +28,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/stephane-martin/nginx-auth-ldap/auth"
 	"github.com/stephane-martin/nginx-auth-ldap/conf"
+	"github.com/stephane-martin/nginx-auth-ldap/janitor"
 	"github.com/stephane-martin/nginx-auth-ldap/log"
 )
 
@@ -55,6 +56,23 @@ const (
 	INVALID_REQUEST
 	OP_ERROR
 )
+
+const TOTAL_REQUESTS = "nginx-auth-ldap-nb-total-requests"
+
+
+
+type Measurement struct {
+	Period string `json:"period"`
+	Success int64 `json:"success"`
+	CachedSuccess int64 `json:"cache_success"`
+	Fail int64 `json:"fail"`
+	Invalid int64 `json:"invalid"`
+	OpError int64 `json:"op_error"`
+}
+
+type TotalMeasurement struct {
+	NbRequests int64 `json:"total_nb_requests"`
+}
 
 type Event struct {
 	Username  string `json:"username"`
@@ -107,7 +125,7 @@ func (e *Event) store(client *redis.Client) {
 	if err == nil {
 		pipe := client.TxPipeline()
 		pipe.ZAdd(set, redis.Z{Score: score, Member: value})
-		pipe.Incr("nginx-auth-ldap-nb-total-requests")
+		pipe.Incr(TOTAL_REQUESTS)
 		_, err = pipe.Exec()
 		if err != nil {
 			log.Log.WithError(err).Error("Error writing an event to Redis")
@@ -182,13 +200,7 @@ func serve() {
 			time.Sleep(time.Duration(30) * time.Second)
 			break
 		}
-		if config.Redis.Enabled {
-			err = config.CheckRedisConn()
-			if err != nil {
-				log.Log.WithError(err).Error("Connection to Redis failed. Stats won't be available.")
-				config.Redis.Enabled = false
-			}
-		}
+
 		err = auth.CheckLdapConn(config)
 		if err != nil {
 			log.Log.WithError(err).Error("Connection to LDAP failed. Sleeping a while and restarting.")
@@ -196,11 +208,25 @@ func serve() {
 			break
 		}
 
+		var redis_client *redis.Client
+		var jan *janitor.Janitor
+		if config.Redis.Enabled {
+			err = config.CheckRedisConn()
+			if err != nil {
+				log.Log.WithError(err).Error("Connection to Redis failed. Stats won't be available.")
+				config.Redis.Enabled = false
+			} else if config.Redis.Expires > 0 {
+				redis_client = config.GetRedisClient()
+				jan = janitor.NewJanitor(config, redis_client, int(OP_ERROR))
+				jan.Start()
+			}
+		}
+
 		// install signal handlers
 		sig_chan := make(chan os.Signal, 1)
 		signal.Notify(sig_chan, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 
-		server, done := StartHttp(config)
+		server, done := StartHttp(config, redis_client)
 		select {
 		// wait for either a signal, or that the HTTP server stops
 		case <-done:
@@ -246,6 +272,9 @@ func serve() {
 			}
 		}
 		close(done)
+		if config.Redis.Enabled {
+			jan.Stop()
+		}
 	}
 }
 
@@ -305,7 +334,7 @@ func NewEvent(r *http.Request, config *conf.GlobalConfig) (e *Event) {
 	return e
 }
 
-func StartHttp(config *conf.GlobalConfig) (*http.Server, chan bool) {
+func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Server, chan bool) {
 
 	mux := http.NewServeMux()
 	server := &http.Server{
@@ -322,13 +351,9 @@ func StartHttp(config *conf.GlobalConfig) (*http.Server, chan bool) {
 		auth_cache = cache.New(expires, 10*expires)
 		secret, err = config.GenerateSecret()
 		if err != nil {
-			log.Log.WithError(err).Fatal("Error generating secret!!!")
+			log.Log.WithError(err).Error("Error generating secret!!!")
+			os.Exit(-1)
 		}
-	}
-
-	var redis_client *redis.Client
-	if config.Redis.Enabled {
-		redis_client = config.GetRedisClient()
 	}
 
 	main_handler := func(w http.ResponseWriter, r *http.Request) {
@@ -420,9 +445,9 @@ func StartHttp(config *conf.GlobalConfig) (*http.Server, chan bool) {
 		// report statistics
 		now := time.Now().UnixNano()
 		now_s := strconv.FormatInt(now, 10)
-		one_minute_ago := strconv.FormatInt(now - one_minute, 10)
-		one_hour_ago := strconv.FormatInt(now - one_hour, 10)
-		one_day_ago := strconv.FormatInt(now - one_day, 10)
+		one_minute_ago := strconv.FormatInt(now-one_minute, 10)
+		one_hour_ago := strconv.FormatInt(now-one_hour, 10)
+		one_day_ago := strconv.FormatInt(now-one_day, 10)
 
 		range_minute := redis.ZRangeBy{Min: one_minute_ago, Max: now_s}
 		range_hour := redis.ZRangeBy{Min: one_hour_ago, Max: now_s}
@@ -430,31 +455,85 @@ func StartHttp(config *conf.GlobalConfig) (*http.Server, chan bool) {
 
 		all_ranges := map[string]redis.ZRangeBy{
 			"minute": range_minute,
-			"hour": range_hour,
-			"day": range_day,
+			"hour":   range_hour,
+			"day":    range_day,
 		}
 
+		measurements := []interface{}{}
+		for period, one_range := range all_ranges {
+			measurement := Measurement{Period: period}
 
-		for rtype := 0; rtype <= int(OP_ERROR); rtype++ {
-			sset := fmt.Sprintf("nginx-auth-ldap-sset-%d", rtype)
-			for period, one_range := range all_ranges {
-				results, err := redis_client.ZRangeByScore(sset, one_range).Result()
-				if err != nil {
-					w.WriteHeader(500)
-					log.Log.WithError(err).Error("Error querying history in Redis")
-					return
-				}
-				fmt.Println(rtype)
-				fmt.Println(period)
-				fmt.Println(len(results))
-				/*
-				for _, result := range results_min {
-					fmt.Println(result)	
-				}
-				*/
+			sset := fmt.Sprintf("nginx-auth-ldap-sset-%d", SUCCESS_AUTH)
+			result, err := redis_client.ZCount(sset, one_range.Min, one_range.Max).Result()
+			if err != nil {
+				w.WriteHeader(500)
+				log.Log.WithError(err).Error("Error querying history in Redis")
+				return
 			}
+			measurement.Success = result
+
+			sset = fmt.Sprintf("nginx-auth-ldap-sset-%d", SUCCESS_AUTH_CACHE)
+			result, err = redis_client.ZCount(sset, one_range.Min, one_range.Max).Result()
+			if err != nil {
+				w.WriteHeader(500)
+				log.Log.WithError(err).Error("Error querying history in Redis")
+				return
+			}
+			measurement.CachedSuccess = result	
+		
+			sset = fmt.Sprintf("nginx-auth-ldap-sset-%d", FAIL_AUTH)
+			result, err = redis_client.ZCount(sset, one_range.Min, one_range.Max).Result()
+			if err != nil {
+				w.WriteHeader(500)
+				log.Log.WithError(err).Error("Error querying history in Redis")
+				return
+			}
+			measurement.Fail = result	
+
+			sset = fmt.Sprintf("nginx-auth-ldap-sset-%d", INVALID_REQUEST)
+			result, err = redis_client.ZCount(sset, one_range.Min, one_range.Max).Result()
+			if err != nil {
+				w.WriteHeader(500)
+				log.Log.WithError(err).Error("Error querying history in Redis")
+				return
+			}
+			measurement.Invalid = result	
+
+			sset = fmt.Sprintf("nginx-auth-ldap-sset-%d", OP_ERROR)
+			result, err = redis_client.ZCount(sset, one_range.Min, one_range.Max).Result()
+			if err != nil {
+				log.Log.WithError(err).Error("Error querying history in Redis")
+				w.WriteHeader(500)
+				return
+			}
+			measurement.OpError = result
+			measurements = append(measurements, measurement)
+
 		}
-		w.WriteHeader(200)
+
+		total_s, err := redis_client.Get(TOTAL_REQUESTS).Result()
+		if err != nil {
+			log.Log.WithError(err).Error("Error querying the total number of requests in Redis")
+			w.WriteHeader(500)
+			return
+		}
+		total, err := strconv.ParseInt(total_s, 10, 64)
+		if err != nil {
+			log.Log.WithError(err).Error("The total number of requests in Redis is not an Int ??!")
+			w.WriteHeader(500)
+			return
+		}
+		measurements = append(measurements, TotalMeasurement{total})
+
+		measurements_b, err := json.Marshal(measurements)
+		if err != nil {
+			log.Log.WithError(err).Error("Error marshalling statistics to JSON")
+			w.WriteHeader(500)
+		} else {
+			w.WriteHeader(200)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(measurements_b)
+		}
 	}
 
 	mux.HandleFunc("/", main_handler)
@@ -486,4 +565,3 @@ func StartHttp(config *conf.GlobalConfig) (*http.Server, chan bool) {
 
 	return server, done
 }
-
