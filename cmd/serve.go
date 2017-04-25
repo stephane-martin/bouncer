@@ -455,6 +455,36 @@ func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Ser
 		w.Write([]byte(config.Export()))
 	}
 
+	auth_handler := func(w http.ResponseWriter, r *http.Request) {
+		username := strings.TrimSpace(r.FormValue("username"))
+		password := strings.TrimSpace(r.FormValue("password"))
+		if len(username) == 0 || len(password) == 0 {
+			w.WriteHeader(403)
+			return
+		}
+		err := auth.Authenticate(username, password, config)
+		if err == nil {
+			w.WriteHeader(200)
+			return
+		}
+		if errwrap.ContainsType(err, new(auth.LdapOpError)) {
+			w.WriteHeader(500)
+			log.Log.WithError(err).WithField("username", username).Error("LDAP operational error happened in /auth")
+			p, _ := os.FindProcess(os.Getpid())
+			p.Signal(syscall.SIGHUP)
+			return
+		} else if errwrap.ContainsType(err, new(auth.LdapAuthError)) {
+			w.WriteHeader(403)
+			return
+		} else {
+			w.WriteHeader(500)
+			log.Log.WithError(err).WithField("username", username).Error("Unexpected error happened in /auth")
+			p, _ := os.FindProcess(os.Getpid())
+			p.Signal(syscall.SIGHUP)
+			return	
+		}
+	}
+
 	stats_handler := func(w http.ResponseWriter, r *http.Request) {
 		// report statistics
 		now := time.Now().UnixNano()
@@ -582,6 +612,7 @@ func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Ser
 	mux.HandleFunc("/status", status_handler)
 	mux.HandleFunc("/conf", config_handler)
 	mux.HandleFunc("/check", check_handler)
+	mux.HandleFunc("/auth", auth_handler)
 
 	if config.Redis.Enabled {
 		mux.HandleFunc("/stats", stats_handler)
