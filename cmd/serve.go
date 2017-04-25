@@ -460,10 +460,27 @@ func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Ser
 		range_hour := redis.ZRangeBy{Min: one_hour_ago, Max: now_s}
 		range_day := redis.ZRangeBy{Min: one_day_ago, Max: now_s}
 
-		all_ranges := map[string]redis.ZRangeBy{
-			"last_minute": range_minute,
-			"last_hour":   range_hour,
-			"last_day":    range_day,
+		all_ranges := map[string]redis.ZRangeBy{}
+		
+		req_period := strings.TrimSpace(r.FormValue("period"))
+		if len(req_period) == 0 {
+			all_ranges = map[string]redis.ZRangeBy{
+				"last_minute": range_minute,
+				"last_hour":   range_hour,
+				"last_day":    range_day,
+			}
+		} else {
+			num_period, err := strconv.ParseInt(req_period, 10, 64)
+			if err == nil {
+				ago := strconv.FormatInt(now - (num_period * 1000000000), 10)
+				all_ranges[fmt.Sprintf("last_%d_seconds", num_period)] = redis.ZRangeBy{Min: ago, Max: now_s}
+			} else {
+				all_ranges = map[string]redis.ZRangeBy{
+					"last_minute": range_minute,
+					"last_hour":   range_hour,
+					"last_day":    range_day,
+				}			
+			}
 		}
 
 		measurements := []interface{}{}
