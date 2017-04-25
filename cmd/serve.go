@@ -448,6 +448,15 @@ func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Ser
 		}
 	}
 
+	reload_handler := func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			w.WriteHeader(200)
+			p, _ := os.FindProcess(os.Getpid())
+			p.Signal(syscall.SIGHUP)
+		} else {
+			w.WriteHeader(400)
+		}	
+	}
 
 	config_handler := func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
@@ -613,6 +622,7 @@ func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Ser
 	mux.HandleFunc("/conf", config_handler)
 	mux.HandleFunc("/check", check_handler)
 	mux.HandleFunc("/auth", auth_handler)
+	mux.HandleFunc("/reload", reload_handler)
 
 	if config.Redis.Enabled {
 		mux.HandleFunc("/stats", stats_handler)
