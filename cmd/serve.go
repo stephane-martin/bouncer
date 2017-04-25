@@ -448,6 +448,13 @@ func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Ser
 		}
 	}
 
+
+	config_handler := func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Write([]byte(config.Export()))
+	}
+
 	stats_handler := func(w http.ResponseWriter, r *http.Request) {
 		// report statistics
 		now := time.Now().UnixNano()
@@ -573,7 +580,9 @@ func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Ser
 
 	mux.HandleFunc("/", main_handler)
 	mux.HandleFunc("/status", status_handler)
+	mux.HandleFunc("/conf", config_handler)
 	mux.HandleFunc("/check", check_handler)
+
 	if config.Redis.Enabled {
 		mux.HandleFunc("/stats", stats_handler)
 	}
