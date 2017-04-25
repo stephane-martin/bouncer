@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -60,16 +61,14 @@ const (
 
 const TOTAL_REQUESTS = "nginx-auth-ldap-nb-total-requests"
 
-
-
 type Measurement struct {
-	Period string `json:"period"`
-	Success int64 `json:"success"`
-	CachedSuccess int64 `json:"cache_success"`
-	Fail int64 `json:"fail"`
-	Invalid int64 `json:"invalid"`
-	OpError int64 `json:"op_error"`
-	NoAuth int64 `json:"no_auth"`
+	Period        string `json:"period"`
+	Success       int64  `json:"success"`
+	CachedSuccess int64  `json:"cache_success"`
+	Fail          int64  `json:"fail"`
+	Invalid       int64  `json:"invalid"`
+	OpError       int64  `json:"op_error"`
+	NoAuth        int64  `json:"no_auth"`
 }
 
 type TotalMeasurement struct {
@@ -462,9 +461,9 @@ func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Ser
 		range_day := redis.ZRangeBy{Min: one_day_ago, Max: now_s}
 
 		all_ranges := map[string]redis.ZRangeBy{
-			"minute": range_minute,
-			"hour":   range_hour,
-			"day":    range_day,
+			"last_minute": range_minute,
+			"last_hour":   range_hour,
+			"last_day":    range_day,
 		}
 
 		measurements := []interface{}{}
@@ -487,8 +486,8 @@ func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Ser
 				log.Log.WithError(err).Error("Error querying history in Redis")
 				return
 			}
-			measurement.CachedSuccess = result	
-		
+			measurement.CachedSuccess = result
+
 			sset = fmt.Sprintf("nginx-auth-ldap-sset-%d", FAIL_AUTH)
 			result, err = redis_client.ZCount(sset, one_range.Min, one_range.Max).Result()
 			if err != nil {
@@ -496,7 +495,7 @@ func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Ser
 				log.Log.WithError(err).Error("Error querying history in Redis")
 				return
 			}
-			measurement.Fail = result	
+			measurement.Fail = result
 
 			sset = fmt.Sprintf("nginx-auth-ldap-sset-%d", INVALID_REQUEST)
 			result, err = redis_client.ZCount(sset, one_range.Min, one_range.Max).Result()
@@ -505,7 +504,7 @@ func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Ser
 				log.Log.WithError(err).Error("Error querying history in Redis")
 				return
 			}
-			measurement.Invalid = result	
+			measurement.Invalid = result
 
 			sset = fmt.Sprintf("nginx-auth-ldap-sset-%d", OP_ERROR)
 			result, err = redis_client.ZCount(sset, one_range.Min, one_range.Max).Result()
@@ -515,7 +514,6 @@ func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Ser
 				return
 			}
 			measurement.OpError = result
-			measurements = append(measurements, measurement)
 
 			sset = fmt.Sprintf("nginx-auth-ldap-sset-%d", NO_AUTH)
 			result, err = redis_client.ZCount(sset, one_range.Min, one_range.Max).Result()
@@ -550,7 +548,9 @@ func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Ser
 		} else {
 			w.WriteHeader(200)
 			w.Header().Set("Content-Type", "application/json")
-			w.Write(measurements_b)
+			var out bytes.Buffer
+			json.Indent(&out, measurements_b, "", "  ")
+			w.Write(out.Bytes())
 		}
 	}
 
