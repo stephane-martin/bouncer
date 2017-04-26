@@ -15,12 +15,10 @@ type Janitor struct {
 	Config       *conf.GlobalConfig
 	Client       *redis.Client
 	stop_chan    chan bool
-	MaxSsetIndex int64
 }
 
 func NewJanitor(config *conf.GlobalConfig, client *redis.Client) (janitor *Janitor) {
-	idx := int64(model.ResultTypes[len(model.ResultTypes)-1])
-	return &Janitor{Config: config, Client: client, MaxSsetIndex: idx}
+	return &Janitor{Config: config, Client: client}
 }
 
 func (j *Janitor) Start() {
@@ -54,10 +52,10 @@ func (j *Janitor) Stop() {
 }
 
 func (j *Janitor) clean() {
-	log.Log.Debug("Janitor: cleaning old records in Redis")
+	log.Log.Debug("Janitor: wake up to clean old records in Redis")
 	limit := strconv.FormatInt(time.Now().UnixNano()-(j.Config.Redis.Expires*1000000000), 10)
-	for rtype := 0; rtype <= int(j.MaxSsetIndex); rtype++ {
-		sset := fmt.Sprintf("nginx-auth-ldap-sset-%d", rtype)
+	for _, t := range model.ResultTypes {
+		sset := fmt.Sprintf("nginx-auth-ldap-sset-%d", t)
 		result, err := j.Client.ZRemRangeByScore(sset, "-inf", limit).Result()
 		if err != nil {
 			log.Log.WithError(err).Error("Janitor: error deleting old entries in Redis")

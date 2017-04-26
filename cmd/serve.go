@@ -20,7 +20,6 @@ import (
 	"github.com/Sirupsen/logrus"
 	logrus_syslog "github.com/Sirupsen/logrus/hooks/syslog"
 	"github.com/facebookgo/pidfile"
-	"github.com/go-redis/redis"
 	"github.com/hashicorp/errwrap"
 	cache "github.com/patrickmn/go-cache"
 	"github.com/spf13/cobra"
@@ -111,6 +110,8 @@ func serve() {
 }
 
 func do_serve() bool {
+	mngr := stats.NewStatsManager(nil)
+	defer mngr.Close()
 
 	config, err := conf.Load(ConfigDir)
 	if err != nil {
@@ -119,26 +120,33 @@ func do_serve() bool {
 		return true
 	}
 
-	err = auth.CheckLdapConn(config)
-	if err != nil {
-		log.Log.WithError(err).Error("Connection to LDAP failed. Sleeping a while and restarting.")
-		time.Sleep(time.Duration(30) * time.Second)
-		return true
-	}
-
-	var redis_client *redis.Client
-	var jan *janitor.Janitor
 	if config.Redis.Enabled {
 		err = config.CheckRedisConn()
 		if err != nil {
 			log.Log.WithError(err).Error("Connection to Redis failed. Stats won't be available.")
 			config.Redis.Enabled = false
-		} else if config.Redis.Expires > 0 {
-			redis_client = config.GetRedisClient()
-			jan = janitor.NewJanitor(config, redis_client)
-			jan.Start()
-			defer jan.Stop()
+		} else {
+			mngr.Client = config.GetRedisClient()
+			if config.Redis.Expires > 0 {
+				j := janitor.NewJanitor(config, mngr.Client)
+				j.Start()
+				defer j.Stop()
+			}
 		}
+	}
+
+	for i, _ := range model.CounterNames {
+		mngr.NewCounter(i)
+	}
+
+	mngr.NewCounter(model.RESTARTS).Incr()
+
+	err = auth.CheckLdapConn(config)
+	if err != nil {
+		log.Log.WithError(err).Error("Connection to LDAP failed. Sleeping a while and restarting.")
+		mngr.NewCounter(model.LDAP_CONN_ERROR).Incr()
+		time.Sleep(time.Duration(30) * time.Second)
+		return true
 	}
 
 	// install signal handlers
@@ -152,8 +160,8 @@ func do_serve() bool {
 		defer cancel_ctx()
 	}
 
-	server, done := StartHttp(config, redis_client)
-	api, api_done := StartApi(config, redis_client)
+	server, done := StartHttp(config, mngr)
+	api, api_done := StartApi(config, mngr)
 
 	select {
 	// wait for either a signal, or that the HTTP server stops
@@ -164,9 +172,9 @@ func do_serve() bool {
 		log.Log.Error("Abrupt termination of the HTTP server. Sleeping a while and restarting.")
 		api.Shutdown(nil)
 		<-api_done
+		mngr.NewCounter(model.HTTP_ABRUPT_TERM).Incr()
 		time.Sleep(time.Duration(30) * time.Second)
 		return true
-
 
 	case <-api_done:
 		signal.Stop(sig_chan)
@@ -174,6 +182,7 @@ func do_serve() bool {
 		log.Log.Error("Abrupt termination of the API server. Sleeping a while and restarting.")
 		server.Shutdown(ctx)
 		<-done
+		mngr.NewCounter(model.API_ABRUPT_TERM).Incr()
 		time.Sleep(time.Duration(30) * time.Second)
 		return true
 
@@ -189,6 +198,7 @@ func do_serve() bool {
 			api.Shutdown(nil)
 			<-done
 			<-api_done
+			mngr.NewCounter(model.SIGTERM_SIGINT).Incr()
 			return false
 		case syscall.SIGHUP:
 			log.Log.Info("SIGHUP received: reloading configuration and restart the HTTP servers")
@@ -196,12 +206,14 @@ func do_serve() bool {
 			api.Shutdown(nil)
 			<-done
 			<-api_done
+			mngr.NewCounter(model.SIGHUP).Incr()
 			return true
 		default:
 			server.Shutdown(ctx)
 			api.Shutdown(nil)
 			<-done
 			<-api_done
+			mngr.NewCounter(model.UNKNOWN_SIG).Incr()
 			return false
 		}
 	}
@@ -266,14 +278,12 @@ func EventFromRequest(r *http.Request, config *conf.GlobalConfig) (e *model.Even
 	return e
 }
 
-func StartApi(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Server, chan bool) {
+func StartApi(config *conf.GlobalConfig, mngr *stats.StatsManager) (*http.Server, chan bool) {
 	mux := http.NewServeMux()
 	server := &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", config.Api.BindAddr, config.Api.Port),
 		Handler: mux,
 	}
-
-	stats_mngr := stats.NewStats(redis_client)
 
 	status_handler := func(w http.ResponseWriter, r *http.Request) {
 		// just reply that the server is alive
@@ -357,9 +367,9 @@ func StartApi(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Serv
 			}
 		}
 
-		measurements, err := stats_mngr.GetMeasurements(all_ranges)
+		measurements, err := mngr.GetStats(all_ranges)
 		if err != nil {
-			log.Log.WithError(err).Error("Error querying stats in Redis")
+			log.Log.WithError(err).WithField("errtype", fmt.Sprintf("%T", err)).Error("Error querying stats in Redis")
 			w.WriteHeader(500)
 			return
 		}
@@ -405,9 +415,7 @@ func StartApi(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Serv
 
 }
 
-func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Server, chan bool) {
-
-	stats_mngr := stats.NewStats(redis_client)
+func StartHttp(config *conf.GlobalConfig, mngr *stats.StatsManager) (*http.Server, chan bool) {
 
 	mux := http.NewServeMux()
 	server := &http.Server{
@@ -452,7 +460,12 @@ func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Ser
 		}()
 
 		if config.Redis.Enabled {
-			defer stats_mngr.Store(ev)
+			defer func() {
+				err := mngr.Store(ev)
+				if err != nil {
+					log.Log.WithError(err).Error("Error happened when storing a request in Redis")
+				}
+			}()
 		}
 
 		defer func() {
@@ -479,7 +492,9 @@ func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Ser
 			}
 		}
 
+		// todo: measure auth time
 		err := auth.Authenticate(ev.Username, ev.Password, config)
+
 		if err == nil {
 			ev.Message = "Auth is succesful (not cached)"
 			ev.Result = model.SUCCESS_AUTH
@@ -487,31 +502,36 @@ func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Ser
 			if auth_cache != nil {
 				auth_cache.Add(ev.Username, hmac_b, cache.DefaultExpiration)
 			}
-		} else {
-			if errwrap.ContainsType(err, new(auth.LdapOpError)) {
-				ev.Message = fmt.Sprintf("LDAP operational error: %s", err.Error())
-				ev.Result = model.OP_ERROR
-				ev.RetCode = 500
-			} else if errwrap.ContainsType(err, new(auth.LdapAuthError)) {
-				ev.Message = "Auth failed"
-				ev.Result = model.FAIL_AUTH
-				ev.RetCode = 401
-				if config.Http.FailedAuthDelay > 0 {
-					// in auth context it is good practice to add a bit of random to counter time based attacks
-					n, err := rand.Int(rand.Reader, big.NewInt(1000))
-					if err != nil {
-						log.Log.WithError(err).Error("Error generating random number. Check your rand source.")
-					} else {
-						time.Sleep(time.Duration(n.Int64()) * time.Millisecond)
-					}
-					time.Sleep(time.Duration(config.Http.FailedAuthDelay) * time.Second)
-				}
-			} else {
-				ev.Message = fmt.Sprintf("Unexpected error: %s", err.Error())
-				ev.Result = model.OP_ERROR
-				ev.RetCode = 500
-			}
+			return
 		}
+
+		if errwrap.ContainsType(err, new(auth.LdapOpError)) {
+			ev.Message = fmt.Sprintf("LDAP operational error: %s", err.Error())
+			ev.Result = model.OP_ERROR
+			ev.RetCode = 500
+			return
+		}
+
+		if errwrap.ContainsType(err, new(auth.LdapAuthError)) {
+			ev.Message = "Auth failed"
+			ev.Result = model.FAIL_AUTH
+			ev.RetCode = 401
+			if config.Http.FailedAuthDelay > 0 {
+				// in auth context it is good practice to add a bit of random to counter time based attacks
+				n, err := rand.Int(rand.Reader, big.NewInt(1000))
+				if err != nil {
+					log.Log.WithError(err).Error("Error generating random number. Check your rand source.")
+				} else {
+					time.Sleep(time.Duration(n.Int64()) * time.Millisecond)
+				}
+				time.Sleep(time.Duration(config.Http.FailedAuthDelay) * time.Second)
+			}
+			return
+		}
+
+		ev.Message = fmt.Sprintf("Unexpected error: %s", err.Error())
+		ev.Result = model.OP_ERROR
+		ev.RetCode = 500
 	}
 
 	mux.HandleFunc("/", main_handler)
