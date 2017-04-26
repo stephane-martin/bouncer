@@ -101,105 +101,103 @@ func serve() {
 
 	restart := true
 	for restart {
-		config, err := conf.Load(ConfigDir)
+		restart = do_serve()
+	}
+}
+
+func do_serve() bool {
+
+	config, err := conf.Load(ConfigDir)
+	if err != nil {
+		log.Log.WithError(err).Error("Error loading configuration. Sleeping a while and restarting.")
+		time.Sleep(time.Duration(30) * time.Second)
+		return true
+	}
+
+	err = auth.CheckLdapConn(config)
+	if err != nil {
+		log.Log.WithError(err).Error("Connection to LDAP failed. Sleeping a while and restarting.")
+		time.Sleep(time.Duration(30) * time.Second)
+		return true
+	}
+
+	var redis_client *redis.Client
+	var jan *janitor.Janitor
+	if config.Redis.Enabled {
+		err = config.CheckRedisConn()
 		if err != nil {
-			log.Log.WithError(err).Error("Error loading configuration. Sleeping a while and restarting.")
-			time.Sleep(time.Duration(30) * time.Second)
-			break
+			log.Log.WithError(err).Error("Connection to Redis failed. Stats won't be available.")
+			config.Redis.Enabled = false
+		} else if config.Redis.Expires > 0 {
+			redis_client = config.GetRedisClient()
+			jan = janitor.NewJanitor(config, redis_client)
+			jan.Start()
+			defer jan.Stop()
 		}
+	}
 
-		err = auth.CheckLdapConn(config)
-		if err != nil {
-			log.Log.WithError(err).Error("Connection to LDAP failed. Sleeping a while and restarting.")
-			time.Sleep(time.Duration(30) * time.Second)
-			break
-		}
+	// install signal handlers
+	sig_chan := make(chan os.Signal, 1)
+	signal.Notify(sig_chan, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 
-		var redis_client *redis.Client
-		var jan *janitor.Janitor
-		if config.Redis.Enabled {
-			err = config.CheckRedisConn()
-			if err != nil {
-				log.Log.WithError(err).Error("Connection to Redis failed. Stats won't be available.")
-				config.Redis.Enabled = false
-			} else if config.Redis.Expires > 0 {
-				redis_client = config.GetRedisClient()
-				jan = janitor.NewJanitor(config, redis_client)
-				jan.Start()
-			}
-		}
+	var ctx context.Context
+	var cancel_ctx context.CancelFunc
+	if config.Http.ShutdownTimeout > 0 {
+		ctx, cancel_ctx = context.WithTimeout(context.Background(), time.Duration(config.Http.ShutdownTimeout)*time.Second)
+		defer cancel_ctx()
+	}
 
-		// install signal handlers
-		sig_chan := make(chan os.Signal, 1)
-		signal.Notify(sig_chan, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	server, done := StartHttp(config, redis_client)
+	api, api_done := StartApi(config, redis_client)
 
-		var ctx context.Context
-		var cancel_ctx context.CancelFunc
-		if config.Http.ShutdownTimeout > 0 {
-			ctx, cancel_ctx = context.WithTimeout(context.Background(), time.Duration(config.Http.ShutdownTimeout)*time.Second)
-		}
+	select {
+	// wait for either a signal, or that the HTTP server stops
+	case <-done:
+		// stop signal handlers
+		signal.Stop(sig_chan)
+		close(sig_chan)
+		log.Log.Error("Abrupt termination of the HTTP server. Sleeping a while and restarting.")
+		api.Shutdown(nil)
+		<-api_done
+		time.Sleep(time.Duration(30) * time.Second)
+		return true
 
-		server, done := StartHttp(config, redis_client)
-		api, api_done := StartApi(config, redis_client)
 
-		select {
-		// wait for either a signal, or that the HTTP server stops
-		case <-done:
-			// stop signal handlers
-			signal.Stop(sig_chan)
-			close(sig_chan)
-			log.Log.Error("Abrupt termination of the HTTP server. Sleeping a while and restarting.")
-			api.Shutdown(nil)
-			time.Sleep(time.Duration(30) * time.Second)
+	case <-api_done:
+		signal.Stop(sig_chan)
+		close(sig_chan)
+		log.Log.Error("Abrupt termination of the API server. Sleeping a while and restarting.")
+		server.Shutdown(ctx)
+		<-done
+		time.Sleep(time.Duration(30) * time.Second)
+		return true
 
-		case <-api_done:
-			signal.Stop(sig_chan)
-			close(sig_chan)
-			log.Log.Error("Abrupt termination of the API server. Sleeping a while and restarting.")
+	case sig := <-sig_chan:
+		// stop signal handlers... in all cases
+		signal.Stop(sig_chan)
+		close(sig_chan)
+
+		switch sig {
+		case syscall.SIGTERM, syscall.SIGINT:
+			log.Log.Info("SIGTERM received: stopping the HTTP servers")
 			server.Shutdown(ctx)
-			time.Sleep(time.Duration(30) * time.Second)
-
-		case sig := <-sig_chan:
-			// stop signal handlers... in all cases
-			signal.Stop(sig_chan)
-			close(sig_chan)
-
-			switch sig {
-			case syscall.SIGTERM:
-				log.Log.Info("SIGTERM received: stopping the HTTP servers")
-				server.Shutdown(ctx)
-				api.Shutdown(nil)
-				<-done
-				<-api_done
-				restart = false
-			case syscall.SIGINT:
-				log.Log.Info("SIGINT received: stopping the HTTP servers")
-				server.Shutdown(ctx)
-				api.Shutdown(nil)
-				<-done
-				<-api_done
-				restart = false
-			case syscall.SIGHUP:
-				log.Log.Info("SIGHUP received: reloading configuration and restart the HTTP servers")
-				server.Shutdown(ctx)
-				api.Shutdown(nil)
-				<-done
-				<-api_done
-			default:
-				server.Shutdown(ctx)
-				api.Shutdown(nil)
-				<-done
-				<-api_done
-				restart = false
-			}
-			if config.Http.ShutdownTimeout > 0 {
-				cancel_ctx()
-			}
-		}
-		close(done)
-		close(api_done)
-		if config.Redis.Enabled {
-			jan.Stop()
+			api.Shutdown(nil)
+			<-done
+			<-api_done
+			return false
+		case syscall.SIGHUP:
+			log.Log.Info("SIGHUP received: reloading configuration and restart the HTTP servers")
+			server.Shutdown(ctx)
+			api.Shutdown(nil)
+			<-done
+			<-api_done
+			return true
+		default:
+			server.Shutdown(ctx)
+			api.Shutdown(nil)
+			<-done
+			<-api_done
+			return false
 		}
 	}
 }
@@ -399,6 +397,7 @@ func StartApi(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Serv
 			}
 		}
 		done <- true
+		close(done)
 	}()
 
 	return server, done
@@ -535,6 +534,7 @@ func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Ser
 			}
 		}
 		done <- true
+		close(done)
 	}()
 
 	return server, done
