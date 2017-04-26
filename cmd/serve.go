@@ -4,9 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"log/syslog"
 	"math/big"
@@ -30,6 +28,7 @@ import (
 	"github.com/stephane-martin/nginx-auth-ldap/conf"
 	"github.com/stephane-martin/nginx-auth-ldap/janitor"
 	"github.com/stephane-martin/nginx-auth-ldap/log"
+	"github.com/stephane-martin/nginx-auth-ldap/model"
 	"github.com/stephane-martin/nginx-auth-ldap/stats"
 )
 
@@ -42,79 +41,6 @@ subrequests.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		serve()
 	},
-}
-
-var one_minute int64 = 60000000000
-var one_hour int64 = 3600000000000
-var one_day int64 = 86400000000000
-
-type Event struct {
-	Username  string       `json:"username"`
-	Password  string       `json:"-"`
-	Host      string       `json:"host"`
-	Uri       string       `json:"uri"`
-	Port      string       `json:"port"`
-	Proto     string       `json:"proto"`
-	RetCode   int          `json:"retcode"`
-	Timestamp int64        `json:"timestamp,string"`
-	Message   string       `json:"message"`
-	Result    stats.Result `json:"result"`
-}
-
-func NewEmptyEvent() *Event {
-	return &Event{Timestamp: time.Now().UnixNano()}
-}
-
-func (e *Event) hmac(secret []byte) []byte {
-	mac := hmac.New(sha256.New, secret)
-	mac.Write([]byte(e.Username))
-	mac.Write([]byte(":"))
-	mac.Write([]byte(e.Password))
-	return mac.Sum(nil)
-}
-
-func (e *Event) log() {
-	l := log.Log.WithField("username", e.Username).WithField("uri", e.Uri).WithField("retcode", e.RetCode).WithField("result", e.Result)
-	if e.RetCode == 200 {
-		l.Debug(e.Message)
-	} else if e.RetCode == 500 {
-		l.Warn(e.Message)
-	} else {
-		l.Info(e.Message)
-	}
-}
-
-func (e *Event) write(w http.ResponseWriter, config *conf.GlobalConfig) {
-	if e.RetCode == 401 {
-		w.Header().Add(config.Http.AuthenticateHeader, fmt.Sprintf("Basic realm=\"%s\"", config.Http.Realm))
-	}
-	w.WriteHeader(e.RetCode)
-}
-
-func (e *Event) notify() {
-	if e.RetCode == 500 {
-		// signal myself that an unexpected problem happened
-		p, _ := os.FindProcess(os.Getpid())
-		p.Signal(syscall.SIGHUP)
-	}
-}
-
-func (e *Event) store(client *redis.Client) {
-	set := fmt.Sprintf("nginx-auth-ldap-sset-%d", e.Result)
-	score := float64(e.Timestamp)
-	value, err := json.Marshal(*e)
-	if err == nil {
-		pipe := client.TxPipeline()
-		pipe.ZAdd(set, redis.Z{Score: score, Member: value})
-		pipe.HIncrBy(stats.TOTAL_REQUESTS, strconv.FormatInt(int64(e.Result), 10), 1)
-		_, err = pipe.Exec()
-		if err != nil {
-			log.Log.WithError(err).Error("Error writing an event to Redis")
-		}
-	} else {
-		log.Log.WithError(err).Error("Error marshalling an event to JSON (should not happen!!!)")
-	}
-
 }
 
 func init() {
@@ -278,8 +204,8 @@ func serve() {
 	}
 }
 
-func EventFromRequest(r *http.Request, config *conf.GlobalConfig) (e *Event) {
-	e = NewEmptyEvent()
+func EventFromRequest(r *http.Request, config *conf.GlobalConfig) (e *model.Event) {
+	e = model.NewEmptyEvent()
 	authorization := strings.TrimSpace(r.Header.Get(config.Http.AuthorizationHeader))
 	e.Host = strings.TrimSpace(r.Header.Get(config.Http.OriginalHostHeader))
 	e.Uri = strings.TrimSpace(r.Header.Get(config.Http.OriginalUriHeader))
@@ -288,41 +214,41 @@ func EventFromRequest(r *http.Request, config *conf.GlobalConfig) (e *Event) {
 
 	if len(authorization) == 0 {
 		e.RetCode = 401
-		e.Result = stats.NO_AUTH
+		e.Result = model.NO_AUTH
 		e.Message = "No Authorization header in request"
 		return e
 	}
 	splits := strings.Split(authorization, " ")
 	if len(splits) != 2 {
 		e.RetCode = 400
-		e.Result = stats.INVALID_REQUEST
+		e.Result = model.INVALID_REQUEST
 		e.Message = "Authorization header is present but has a bad format"
 		return e
 	}
 	if splits[0] != "Basic" {
 		e.RetCode = 400
-		e.Result = stats.INVALID_REQUEST
+		e.Result = model.INVALID_REQUEST
 		e.Message = "Authorization header is present but does not begin with 'Basic'"
 		return e
 	}
 	encoded := splits[1]
 	if len(encoded) == 0 {
 		e.RetCode = 400
-		e.Result = stats.INVALID_REQUEST
+		e.Result = model.INVALID_REQUEST
 		e.Message = "The encoded base64 is empty"
 		return e
 	}
 	decoded, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		e.RetCode = 400
-		e.Result = stats.INVALID_REQUEST
+		e.Result = model.INVALID_REQUEST
 		e.Message = "Not properly base64 encoded"
 		return e
 	}
 	splits = strings.Split(string(decoded), ":")
 	if len(splits) != 2 {
 		e.RetCode = 400
-		e.Result = stats.INVALID_REQUEST
+		e.Result = model.INVALID_REQUEST
 		e.Message = "The decoded base64 does not contain a ':'"
 		return e
 	}
@@ -330,7 +256,7 @@ func EventFromRequest(r *http.Request, config *conf.GlobalConfig) (e *Event) {
 	e.Password = strings.TrimSpace(splits[1])
 	if len(e.Username) == 0 || len(e.Password) == 0 {
 		e.RetCode = 401
-		e.Result = stats.FAIL_AUTH
+		e.Result = model.FAIL_AUTH
 		e.Message = "Empty username or empty password"
 		return e
 	}
@@ -343,6 +269,8 @@ func StartApi(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Serv
 		Addr:    fmt.Sprintf("%s:%d", config.Api.BindAddr, config.Api.Port),
 		Handler: mux,
 	}
+
+	stats_mngr := stats.NewStats(redis_client)
 
 	status_handler := func(w http.ResponseWriter, r *http.Request) {
 		// just reply that the server is alive
@@ -429,7 +357,8 @@ func StartApi(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Serv
 				all_ranges = map[string]int64{period_name: num_period}
 			}
 		}
-		measurements, err := stats.GetMeasurements(all_ranges, redis_client)
+
+		measurements, err := stats_mngr.GetMeasurements(all_ranges)
 		if err != nil {
 			log.Log.WithError(err).Error("Error querying stats in Redis")
 			w.WriteHeader(500)
@@ -478,6 +407,8 @@ func StartApi(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Serv
 
 func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Server, chan bool) {
 
+	stats_mngr := stats.NewStats(redis_client)
+
 	mux := http.NewServeMux()
 	server := &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", config.Http.BindAddr, config.Http.Port),
@@ -502,24 +433,47 @@ func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Ser
 		var hmac_b []byte
 
 		ev := EventFromRequest(r, config)
-		defer ev.notify()
-		defer ev.log()
-		defer ev.write(w, config)
+
+		defer func() {
+			if ev.RetCode == 500 {
+				p, _ := os.FindProcess(os.Getpid())
+				p.Signal(syscall.SIGHUP)
+			}
+		}()
+
+		defer func() {
+			l := log.Log.WithField("username", ev.Username).WithField("uri", ev.Uri).WithField("retcode", ev.RetCode).WithField("result", ev.Result)
+			if ev.RetCode == 200 {
+				l.Debug(ev.Message)
+			} else if ev.RetCode == 500 {
+				l.Warn(ev.Message)
+			} else {
+				l.Info(ev.Message)
+			}
+		}()
+
 		if config.Redis.Enabled {
-			defer ev.store(redis_client)
+			defer stats_mngr.Store(ev)
 		}
+
+		defer func() {
+			if ev.RetCode == 401 {
+				w.Header().Add(config.Http.AuthenticateHeader, fmt.Sprintf("Basic realm=\"%s\"", config.Http.Realm))
+			}
+			w.WriteHeader(ev.RetCode)
+		}()
 
 		if ev.RetCode != 0 {
 			return
 		}
 
 		if auth_cache != nil {
-			hmac_b = ev.hmac(secret)
+			hmac_b = ev.Hmac(secret)
 			cached_hmac_b, found := auth_cache.Get(ev.Username)
 			if found {
 				if hmac.Equal(hmac_b, cached_hmac_b.([]byte)) {
 					ev.Message = "Auth is successful (cached)"
-					ev.Result = stats.SUCCESS_AUTH_CACHE
+					ev.Result = model.SUCCESS_AUTH_CACHE
 					ev.RetCode = 200
 					return
 				}
@@ -529,7 +483,7 @@ func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Ser
 		err := auth.Authenticate(ev.Username, ev.Password, config)
 		if err == nil {
 			ev.Message = "Auth is succesful (not cached)"
-			ev.Result = stats.SUCCESS_AUTH
+			ev.Result = model.SUCCESS_AUTH
 			ev.RetCode = 200
 			if auth_cache != nil {
 				auth_cache.Add(ev.Username, hmac_b, cache.DefaultExpiration)
@@ -537,11 +491,11 @@ func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Ser
 		} else {
 			if errwrap.ContainsType(err, new(auth.LdapOpError)) {
 				ev.Message = fmt.Sprintf("LDAP operational error: %s", err.Error())
-				ev.Result = stats.OP_ERROR
+				ev.Result = model.OP_ERROR
 				ev.RetCode = 500
 			} else if errwrap.ContainsType(err, new(auth.LdapAuthError)) {
 				ev.Message = "Auth failed"
-				ev.Result = stats.FAIL_AUTH
+				ev.Result = model.FAIL_AUTH
 				ev.RetCode = 401
 				if config.Http.FailedAuthDelay > 0 {
 					// in auth context it is good practice to add a bit of random to counter time based attacks
@@ -555,14 +509,13 @@ func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Ser
 				}
 			} else {
 				ev.Message = fmt.Sprintf("Unexpected error: %s", err.Error())
-				ev.Result = stats.OP_ERROR
+				ev.Result = model.OP_ERROR
 				ev.RetCode = 500
 			}
 		}
 	}
 
 	mux.HandleFunc("/", main_handler)
-
 
 	done := make(chan bool, 1)
 	go func() {

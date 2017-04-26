@@ -9,23 +9,11 @@ import (
 
 	"github.com/go-redis/redis"
 	"github.com/hashicorp/errwrap"
+	"github.com/stephane-martin/nginx-auth-ldap/model"
 )
 
 const TOTAL_REQUESTS = "nginx-auth-ldap-nb-total-requests"
 const SET_REQUESTS_TPL = "nginx-auth-ldap-sset-%d"
-
-type Result uint8
-
-const (
-	SUCCESS_AUTH Result = iota
-	SUCCESS_AUTH_CACHE
-	FAIL_AUTH
-	INVALID_REQUEST
-	OP_ERROR
-	NO_AUTH
-)
-
-var ResultTypes []Result = []Result{SUCCESS_AUTH, SUCCESS_AUTH_CACHE, FAIL_AUTH, INVALID_REQUEST, OP_ERROR, NO_AUTH}
 
 type Measurement struct {
 	Period        string `json:"period"`
@@ -37,19 +25,19 @@ type Measurement struct {
 	NoAuth        int64  `json:"no_auth"`
 }
 
-func (m *Measurement) Set(r Result, val int64) {
+func (m *Measurement) Set(r model.Result, val int64) {
 	switch r {
-	case SUCCESS_AUTH:
+	case model.SUCCESS_AUTH:
 		m.Success = val
-	case SUCCESS_AUTH_CACHE:
+	case model.SUCCESS_AUTH_CACHE:
 		m.CachedSuccess = val
-	case FAIL_AUTH:
+	case model.FAIL_AUTH:
 		m.Fail = val
-	case INVALID_REQUEST:
+	case model.INVALID_REQUEST:
 		m.Invalid = val
-	case OP_ERROR:
+	case model.OP_ERROR:
 		m.OpError = val
-	case NO_AUTH:
+	case model.NO_AUTH:
 		m.NoAuth = val
 	default:
 	}
@@ -86,12 +74,38 @@ func GetRange(now int64, nb_seconds int64) redis.ZRangeBy {
 	return redis.ZRangeBy{Min: strconv.FormatInt(now-(nb_seconds*1000000000), 10), Max: strconv.FormatInt(now, 10)}
 }
 
-func GetMeasurementLastSeconds(now int64, nb_seconds int64, c *redis.Client) (*Measurement, error) {
+type Stats struct {
+	client *redis.Client
+}
+
+func NewStats(c *redis.Client) *Stats {
+	return &Stats{client: c}
+}
+
+func (s *Stats) Store(e *model.Event) error {
+	set := fmt.Sprintf(SET_REQUESTS_TPL, e.Result)
+	score := float64(e.Timestamp)
+	value, err := json.Marshal(*e)
+	if err == nil {
+		pipe := s.client.TxPipeline()
+		pipe.ZAdd(set, redis.Z{Score: score, Member: value})
+		pipe.HIncrBy(TOTAL_REQUESTS, strconv.FormatInt(int64(e.Result), 10), 1)
+		_, err = pipe.Exec()
+		if err != nil {
+			return errwrap.Wrapf("Error writing an event to Redis: {{err}}", err)
+		}
+	} else {
+		return errwrap.Wrapf("Error marshalling an event to JSON: {{err}}", err)
+	}
+	return nil
+}
+
+func (s *Stats) GetMeasurementLastSeconds(now int64, nb_seconds int64) (*Measurement, error) {
 	r := GetRange(now, nb_seconds)
 	measurement := Measurement{}
-	for _, t := range ResultTypes {
+	for _, t := range model.ResultTypes {
 		sset := fmt.Sprintf(SET_REQUESTS_TPL, t)
-		result, err := c.ZCount(sset, r.Min, r.Max).Result()
+		result, err := s.client.ZCount(sset, r.Min, r.Max).Result()
 		if err != nil {
 			return nil, errwrap.Wrapf("Error querying history in Redis: {{err}}", err)
 		}
@@ -100,11 +114,11 @@ func GetMeasurementLastSeconds(now int64, nb_seconds int64, c *redis.Client) (*M
 	return &measurement, nil
 }
 
-func GetMeasurements(all_ranges map[string]int64, c *redis.Client) (*Measurements, error) {
+func (s *Stats) GetMeasurements(all_ranges map[string]int64) (*Measurements, error) {
 	now := time.Now().UnixNano()
 	measurements := NewMeasurements()
 	for period_name, seconds := range all_ranges {
-		measurement, err := GetMeasurementLastSeconds(now, seconds, c)
+		measurement, err := s.GetMeasurementLastSeconds(now, seconds)
 		if err != nil {
 			return nil, err
 		}
@@ -113,7 +127,7 @@ func GetMeasurements(all_ranges map[string]int64, c *redis.Client) (*Measurement
 	}
 
 	measurement := Measurement{Period: "all"}
-	m, err := c.HGetAll(TOTAL_REQUESTS).Result()
+	m, err := s.client.HGetAll(TOTAL_REQUESTS).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +140,7 @@ func GetMeasurements(all_ranges map[string]int64, c *redis.Client) (*Measurement
 		if err != nil {
 			return nil, err
 		}
-		measurement.Set(Result(t), val)
+		measurement.Set(model.Result(t), val)
 	}
 	measurements.Append(measurement)
 

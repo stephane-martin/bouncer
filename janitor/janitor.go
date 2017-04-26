@@ -8,7 +8,7 @@ import (
 	"github.com/go-redis/redis"
 	"github.com/stephane-martin/nginx-auth-ldap/conf"
 	"github.com/stephane-martin/nginx-auth-ldap/log"
-	"github.com/stephane-martin/nginx-auth-ldap/stats"
+	"github.com/stephane-martin/nginx-auth-ldap/model"
 )
 
 type Janitor struct {
@@ -19,7 +19,7 @@ type Janitor struct {
 }
 
 func NewJanitor(config *conf.GlobalConfig, client *redis.Client) (janitor *Janitor) {
-	idx := int64(stats.ResultTypes[len(stats.ResultTypes) - 1])
+	idx := int64(model.ResultTypes[len(model.ResultTypes)-1])
 	return &Janitor{Config: config, Client: client, MaxSsetIndex: idx}
 }
 
