@@ -48,6 +48,12 @@ key = "" # (default "")
 # in that case you don't need to provide 'certificate_authority'
 insecure = false # default 'false'
 
+[api]
+# bind address for the API service
+bind_addr = "127.0.0.1"
+# the API port
+port = 8081
+
 [http]
 # the bind address for the HTTP service (0.0.0.0 for all interfaces)
 bind_addr = "0.0.0.0" # default "0.0.0.0"

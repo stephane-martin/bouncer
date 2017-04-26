@@ -45,14 +45,14 @@ Send SIGHUP to the process.
 
 # Health check
 
-`curl -I http://NGINX_AUTH_LDAP:PORT/check`
+`curl -I http://127.0.0.1:8081/check`
 
 # Stats
 
 Redis is needed to store the requests logs that we use to make the stats. Enable
 it in configuration.
 
-Then: `curl http://NGINX_AUTH_LDAP:PORT/stats`
+Then: `curl http://127.0.0.1:8081/stats`
 
 
 # Nginx configuration example
