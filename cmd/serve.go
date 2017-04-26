@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -31,6 +30,7 @@ import (
 	"github.com/stephane-martin/nginx-auth-ldap/conf"
 	"github.com/stephane-martin/nginx-auth-ldap/janitor"
 	"github.com/stephane-martin/nginx-auth-ldap/log"
+	"github.com/stephane-martin/nginx-auth-ldap/stats"
 )
 
 // serveCmd represents the serve command
@@ -48,44 +48,21 @@ var one_minute int64 = 60000000000
 var one_hour int64 = 3600000000000
 var one_day int64 = 86400000000000
 
-type Result uint8
-
-const (
-	SUCCESS_AUTH Result = iota
-	SUCCESS_AUTH_CACHE
-	FAIL_AUTH
-	INVALID_REQUEST
-	OP_ERROR
-	NO_AUTH
-)
-
-const TOTAL_REQUESTS = "nginx-auth-ldap-nb-total-requests"
-
-type Measurement struct {
-	Period        string `json:"period"`
-	Success       int64  `json:"success"`
-	CachedSuccess int64  `json:"cache_success"`
-	Fail          int64  `json:"fail"`
-	Invalid       int64  `json:"invalid"`
-	OpError       int64  `json:"op_error"`
-	NoAuth        int64  `json:"no_auth"`
-}
-
-type TotalMeasurement struct {
-	NbRequests int64 `json:"total_nb_requests"`
-}
-
 type Event struct {
-	Username  string `json:"username"`
-	Password  string `json:"-"`
-	Host      string `json:"host"`
-	Uri       string `json:"uri"`
-	Port      string `json:"port"`
-	Proto     string `json:"proto"`
-	RetCode   int    `json:"retcode"`
-	Timestamp int64  `json:"timestamp,string"`
-	Message   string `json:"message"`
-	Result    Result `json:"result"`
+	Username  string       `json:"username"`
+	Password  string       `json:"-"`
+	Host      string       `json:"host"`
+	Uri       string       `json:"uri"`
+	Port      string       `json:"port"`
+	Proto     string       `json:"proto"`
+	RetCode   int          `json:"retcode"`
+	Timestamp int64        `json:"timestamp,string"`
+	Message   string       `json:"message"`
+	Result    stats.Result `json:"result"`
+}
+
+func NewEmptyEvent() *Event {
+	return &Event{Timestamp: time.Now().UnixNano()}
 }
 
 func (e *Event) hmac(secret []byte) []byte {
@@ -129,7 +106,7 @@ func (e *Event) store(client *redis.Client) {
 	if err == nil {
 		pipe := client.TxPipeline()
 		pipe.ZAdd(set, redis.Z{Score: score, Member: value})
-		pipe.Incr(TOTAL_REQUESTS)
+		pipe.HIncrBy(stats.TOTAL_REQUESTS, strconv.FormatInt(int64(e.Result), 10), 1)
 		_, err = pipe.Exec()
 		if err != nil {
 			log.Log.WithError(err).Error("Error writing an event to Redis")
@@ -221,7 +198,7 @@ func serve() {
 				config.Redis.Enabled = false
 			} else if config.Redis.Expires > 0 {
 				redis_client = config.GetRedisClient()
-				jan = janitor.NewJanitor(config, redis_client, int(NO_AUTH))
+				jan = janitor.NewJanitor(config, redis_client)
 				jan.Start()
 			}
 		}
@@ -230,7 +207,15 @@ func serve() {
 		sig_chan := make(chan os.Signal, 1)
 		signal.Notify(sig_chan, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 
+		var ctx context.Context
+		var cancel_ctx context.CancelFunc
+		if config.Http.ShutdownTimeout > 0 {
+			ctx, cancel_ctx = context.WithTimeout(context.Background(), time.Duration(config.Http.ShutdownTimeout)*time.Second)
+		}
+
 		server, done := StartHttp(config, redis_client)
+		api, api_done := StartApi(config, redis_client)
+
 		select {
 		// wait for either a signal, or that the HTTP server stops
 		case <-done:
@@ -238,37 +223,47 @@ func serve() {
 			signal.Stop(sig_chan)
 			close(sig_chan)
 			log.Log.Error("Abrupt termination of the HTTP server. Sleeping a while and restarting.")
+			api.Shutdown(nil)
+			time.Sleep(time.Duration(30) * time.Second)
+
+		case <-api_done:
+			signal.Stop(sig_chan)
+			close(sig_chan)
+			log.Log.Error("Abrupt termination of the API server. Sleeping a while and restarting.")
+			server.Shutdown(ctx)
 			time.Sleep(time.Duration(30) * time.Second)
 
 		case sig := <-sig_chan:
-			// stop signal handlers... in both cases
+			// stop signal handlers... in all cases
 			signal.Stop(sig_chan)
 			close(sig_chan)
 
-			var ctx context.Context
-			var cancel_ctx context.CancelFunc
-			if config.Http.ShutdownTimeout > 0 {
-				ctx, cancel_ctx = context.WithTimeout(context.Background(), time.Duration(config.Http.ShutdownTimeout)*time.Second)
-			}
-
 			switch sig {
 			case syscall.SIGTERM:
-				log.Log.Info("SIGTERM received: stopping the HTTP server")
+				log.Log.Info("SIGTERM received: stopping the HTTP servers")
 				server.Shutdown(ctx)
+				api.Shutdown(nil)
 				<-done
+				<-api_done
 				restart = false
 			case syscall.SIGINT:
-				log.Log.Info("SIGINT received: stopping the HTTP server")
+				log.Log.Info("SIGINT received: stopping the HTTP servers")
 				server.Shutdown(ctx)
+				api.Shutdown(nil)
 				<-done
+				<-api_done
 				restart = false
 			case syscall.SIGHUP:
-				log.Log.Info("SIGHUP received: reloading configuration and restart the HTTP server")
+				log.Log.Info("SIGHUP received: reloading configuration and restart the HTTP servers")
 				server.Shutdown(ctx)
+				api.Shutdown(nil)
 				<-done
+				<-api_done
 			default:
 				server.Shutdown(ctx)
+				api.Shutdown(nil)
 				<-done
+				<-api_done
 				restart = false
 			}
 			if config.Http.ShutdownTimeout > 0 {
@@ -276,14 +271,15 @@ func serve() {
 			}
 		}
 		close(done)
+		close(api_done)
 		if config.Redis.Enabled {
 			jan.Stop()
 		}
 	}
 }
 
-func NewEvent(r *http.Request, config *conf.GlobalConfig) (e *Event) {
-	e = &Event{Timestamp: time.Now().UnixNano()}
+func EventFromRequest(r *http.Request, config *conf.GlobalConfig) (e *Event) {
+	e = NewEmptyEvent()
 	authorization := strings.TrimSpace(r.Header.Get(config.Http.AuthorizationHeader))
 	e.Host = strings.TrimSpace(r.Header.Get(config.Http.OriginalHostHeader))
 	e.Uri = strings.TrimSpace(r.Header.Get(config.Http.OriginalUriHeader))
@@ -292,41 +288,41 @@ func NewEvent(r *http.Request, config *conf.GlobalConfig) (e *Event) {
 
 	if len(authorization) == 0 {
 		e.RetCode = 401
-		e.Result = NO_AUTH
+		e.Result = stats.NO_AUTH
 		e.Message = "No Authorization header in request"
 		return e
 	}
 	splits := strings.Split(authorization, " ")
 	if len(splits) != 2 {
 		e.RetCode = 400
-		e.Result = INVALID_REQUEST
+		e.Result = stats.INVALID_REQUEST
 		e.Message = "Authorization header is present but has a bad format"
 		return e
 	}
 	if splits[0] != "Basic" {
 		e.RetCode = 400
-		e.Result = INVALID_REQUEST
+		e.Result = stats.INVALID_REQUEST
 		e.Message = "Authorization header is present but does not begin with 'Basic'"
 		return e
 	}
 	encoded := splits[1]
 	if len(encoded) == 0 {
 		e.RetCode = 400
-		e.Result = INVALID_REQUEST
+		e.Result = stats.INVALID_REQUEST
 		e.Message = "The encoded base64 is empty"
 		return e
 	}
 	decoded, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		e.RetCode = 400
-		e.Result = INVALID_REQUEST
+		e.Result = stats.INVALID_REQUEST
 		e.Message = "Not properly base64 encoded"
 		return e
 	}
 	splits = strings.Split(string(decoded), ":")
 	if len(splits) != 2 {
 		e.RetCode = 400
-		e.Result = INVALID_REQUEST
+		e.Result = stats.INVALID_REQUEST
 		e.Message = "The decoded base64 does not contain a ':'"
 		return e
 	}
@@ -334,96 +330,18 @@ func NewEvent(r *http.Request, config *conf.GlobalConfig) (e *Event) {
 	e.Password = strings.TrimSpace(splits[1])
 	if len(e.Username) == 0 || len(e.Password) == 0 {
 		e.RetCode = 401
-		e.Result = FAIL_AUTH
+		e.Result = stats.FAIL_AUTH
 		e.Message = "Empty username or empty password"
 		return e
 	}
 	return e
 }
 
-func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Server, chan bool) {
-
+func StartApi(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Server, chan bool) {
 	mux := http.NewServeMux()
 	server := &http.Server{
-		Addr:    fmt.Sprintf("%s:%d", config.Http.BindAddr, config.Http.Port),
+		Addr:    fmt.Sprintf("%s:%d", config.Api.BindAddr, config.Api.Port),
 		Handler: mux,
-	}
-
-	var secret []byte
-	var err error
-	var auth_cache *cache.Cache
-
-	if config.Cache.Expires > 0 {
-		expires := time.Duration(config.Cache.Expires) * time.Second
-		auth_cache = cache.New(expires, 10*expires)
-		secret, err = config.GenerateSecret()
-		if err != nil {
-			log.Log.WithError(err).Error("Error generating secret!!!")
-			os.Exit(-1)
-		}
-	}
-
-	main_handler := func(w http.ResponseWriter, r *http.Request) {
-		var hmac_b []byte
-
-		ev := NewEvent(r, config)
-		defer ev.notify()
-		defer ev.log()
-		defer ev.write(w, config)
-		if config.Redis.Enabled {
-			defer ev.store(redis_client)
-		}
-
-		if ev.RetCode != 0 {
-			return
-		}
-
-		if auth_cache != nil {
-			hmac_b = ev.hmac(secret)
-			cached_hmac_b, found := auth_cache.Get(ev.Username)
-			if found {
-				if hmac.Equal(hmac_b, cached_hmac_b.([]byte)) {
-					ev.Message = "Auth is successful (cached)"
-					ev.Result = SUCCESS_AUTH_CACHE
-					ev.RetCode = 200
-					return
-				}
-			}
-		}
-
-		err := auth.Authenticate(ev.Username, ev.Password, config)
-		if err == nil {
-			ev.Message = "Auth is succesful (not cached)"
-			ev.Result = SUCCESS_AUTH
-			ev.RetCode = 200
-			if auth_cache != nil {
-				auth_cache.Add(ev.Username, hmac_b, cache.DefaultExpiration)
-			}
-		} else {
-			if errwrap.ContainsType(err, new(auth.LdapOpError)) {
-				ev.Message = fmt.Sprintf("LDAP operational error: %s", err.Error())
-				ev.Result = OP_ERROR
-				ev.RetCode = 500
-			} else if errwrap.ContainsType(err, new(auth.LdapAuthError)) {
-				ev.Message = "Auth failed"
-				ev.Result = FAIL_AUTH
-				ev.RetCode = 401
-				if config.Http.FailedAuthDelay > 0 {
-					// in auth context it is good practice to add a bit of random to counter time based attacks
-					n, err := rand.Int(rand.Reader, big.NewInt(1000))
-					if err != nil {
-						log.Log.WithError(err).Error("Error generating random number. Check your rand source.")
-					} else {
-						time.Sleep(time.Duration(n.Int64()) * time.Millisecond)
-					}
-					time.Sleep(time.Duration(config.Http.FailedAuthDelay) * time.Second)
-				}
-			} else {
-				ev.Message = fmt.Sprintf("Unexpected error: %s", err.Error())
-				ev.Result = OP_ERROR
-				ev.RetCode = 500
-			}
-		}
 	}
 
 	status_handler := func(w http.ResponseWriter, r *http.Request) {
@@ -455,7 +373,7 @@ func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Ser
 			p.Signal(syscall.SIGHUP)
 		} else {
 			w.WriteHeader(400)
-		}	
+		}
 	}
 
 	config_handler := func(w http.ResponseWriter, r *http.Request) {
@@ -490,134 +408,45 @@ func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Ser
 			log.Log.WithError(err).WithField("username", username).Error("Unexpected error happened in /auth")
 			p, _ := os.FindProcess(os.Getpid())
 			p.Signal(syscall.SIGHUP)
-			return	
+			return
 		}
 	}
 
 	stats_handler := func(w http.ResponseWriter, r *http.Request) {
 		// report statistics
-		now := time.Now().UnixNano()
-		now_s := strconv.FormatInt(now, 10)
-		one_minute_ago := strconv.FormatInt(now-one_minute, 10)
-		one_hour_ago := strconv.FormatInt(now-one_hour, 10)
-		one_day_ago := strconv.FormatInt(now-one_day, 10)
 
-		range_minute := redis.ZRangeBy{Min: one_minute_ago, Max: now_s}
-		range_hour := redis.ZRangeBy{Min: one_hour_ago, Max: now_s}
-		range_day := redis.ZRangeBy{Min: one_day_ago, Max: now_s}
+		all_ranges := map[string]int64{
+			"last_day":  86400,
+			"last_hour": 3600,
+			"last_min":  60,
+		}
 
-		all_ranges := map[string]redis.ZRangeBy{}
-		
 		req_period := strings.TrimSpace(r.FormValue("period"))
-		if len(req_period) == 0 {
-			all_ranges = map[string]redis.ZRangeBy{
-				"last_minute": range_minute,
-				"last_hour":   range_hour,
-				"last_day":    range_day,
-			}
-		} else {
+		if len(req_period) != 0 {
 			num_period, err := strconv.ParseInt(req_period, 10, 64)
 			if err == nil {
-				ago := strconv.FormatInt(now - (num_period * 1000000000), 10)
-				all_ranges[fmt.Sprintf("last_%d_seconds", num_period)] = redis.ZRangeBy{Min: ago, Max: now_s}
-			} else {
-				all_ranges = map[string]redis.ZRangeBy{
-					"last_minute": range_minute,
-					"last_hour":   range_hour,
-					"last_day":    range_day,
-				}			
+				period_name := fmt.Sprintf("last_%d_seconds", num_period)
+				all_ranges = map[string]int64{period_name: num_period}
 			}
 		}
-
-		measurements := []interface{}{}
-		for period, one_range := range all_ranges {
-			measurement := Measurement{Period: period}
-
-			sset := fmt.Sprintf("nginx-auth-ldap-sset-%d", SUCCESS_AUTH)
-			result, err := redis_client.ZCount(sset, one_range.Min, one_range.Max).Result()
-			if err != nil {
-				w.WriteHeader(500)
-				log.Log.WithError(err).Error("Error querying history in Redis")
-				return
-			}
-			measurement.Success = result
-
-			sset = fmt.Sprintf("nginx-auth-ldap-sset-%d", SUCCESS_AUTH_CACHE)
-			result, err = redis_client.ZCount(sset, one_range.Min, one_range.Max).Result()
-			if err != nil {
-				w.WriteHeader(500)
-				log.Log.WithError(err).Error("Error querying history in Redis")
-				return
-			}
-			measurement.CachedSuccess = result
-
-			sset = fmt.Sprintf("nginx-auth-ldap-sset-%d", FAIL_AUTH)
-			result, err = redis_client.ZCount(sset, one_range.Min, one_range.Max).Result()
-			if err != nil {
-				w.WriteHeader(500)
-				log.Log.WithError(err).Error("Error querying history in Redis")
-				return
-			}
-			measurement.Fail = result
-
-			sset = fmt.Sprintf("nginx-auth-ldap-sset-%d", INVALID_REQUEST)
-			result, err = redis_client.ZCount(sset, one_range.Min, one_range.Max).Result()
-			if err != nil {
-				w.WriteHeader(500)
-				log.Log.WithError(err).Error("Error querying history in Redis")
-				return
-			}
-			measurement.Invalid = result
-
-			sset = fmt.Sprintf("nginx-auth-ldap-sset-%d", OP_ERROR)
-			result, err = redis_client.ZCount(sset, one_range.Min, one_range.Max).Result()
-			if err != nil {
-				log.Log.WithError(err).Error("Error querying history in Redis")
-				w.WriteHeader(500)
-				return
-			}
-			measurement.OpError = result
-
-			sset = fmt.Sprintf("nginx-auth-ldap-sset-%d", NO_AUTH)
-			result, err = redis_client.ZCount(sset, one_range.Min, one_range.Max).Result()
-			if err != nil {
-				log.Log.WithError(err).Error("Error querying history in Redis")
-				w.WriteHeader(500)
-				return
-			}
-			measurement.NoAuth = result
-			measurements = append(measurements, measurement)
-
-		}
-
-		total_s, err := redis_client.Get(TOTAL_REQUESTS).Result()
+		measurements, err := stats.GetMeasurements(all_ranges, redis_client)
 		if err != nil {
-			log.Log.WithError(err).Error("Error querying the total number of requests in Redis")
+			log.Log.WithError(err).Error("Error querying stats in Redis")
 			w.WriteHeader(500)
 			return
 		}
-		total, err := strconv.ParseInt(total_s, 10, 64)
-		if err != nil {
-			log.Log.WithError(err).Error("The total number of requests in Redis is not an Int ??!")
-			w.WriteHeader(500)
-			return
-		}
-		measurements = append(measurements, TotalMeasurement{total})
 
-		measurements_b, err := json.Marshal(measurements)
+		out, err := measurements.Json()
 		if err != nil {
 			log.Log.WithError(err).Error("Error marshalling statistics to JSON")
 			w.WriteHeader(500)
 		} else {
 			w.WriteHeader(200)
 			w.Header().Set("Content-Type", "application/json")
-			var out bytes.Buffer
-			json.Indent(&out, measurements_b, "", "  ")
-			w.Write(out.Bytes())
+			w.Write(out)
 		}
 	}
 
-	mux.HandleFunc("/", main_handler)
 	mux.HandleFunc("/status", status_handler)
 	mux.HandleFunc("/conf", config_handler)
 	mux.HandleFunc("/check", check_handler)
@@ -627,6 +456,113 @@ func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Ser
 	if config.Redis.Enabled {
 		mux.HandleFunc("/stats", stats_handler)
 	}
+
+	done := make(chan bool, 1)
+	go func() {
+		log.Log.WithField("bind", server.Addr).Info("Starting HTTP server")
+		err := server.ListenAndServe()
+		if err != nil {
+			switch err := err.(type) {
+			default:
+				log.Log.WithError(err).Info("API server error. (Probably normal)")
+			case *net.OpError:
+				log.Log.WithError(err).Error("API server operational error")
+			}
+		}
+		done <- true
+	}()
+
+	return server, done
+
+}
+
+func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Server, chan bool) {
+
+	mux := http.NewServeMux()
+	server := &http.Server{
+		Addr:    fmt.Sprintf("%s:%d", config.Http.BindAddr, config.Http.Port),
+		Handler: mux,
+	}
+
+	var secret []byte
+	var err error
+	var auth_cache *cache.Cache
+
+	if config.Cache.Expires > 0 {
+		expires := time.Duration(config.Cache.Expires) * time.Second
+		auth_cache = cache.New(expires, 10*expires)
+		secret, err = config.GenerateSecret()
+		if err != nil {
+			log.Log.WithError(err).Error("Error generating secret!!!")
+			os.Exit(-1)
+		}
+	}
+
+	main_handler := func(w http.ResponseWriter, r *http.Request) {
+		var hmac_b []byte
+
+		ev := EventFromRequest(r, config)
+		defer ev.notify()
+		defer ev.log()
+		defer ev.write(w, config)
+		if config.Redis.Enabled {
+			defer ev.store(redis_client)
+		}
+
+		if ev.RetCode != 0 {
+			return
+		}
+
+		if auth_cache != nil {
+			hmac_b = ev.hmac(secret)
+			cached_hmac_b, found := auth_cache.Get(ev.Username)
+			if found {
+				if hmac.Equal(hmac_b, cached_hmac_b.([]byte)) {
+					ev.Message = "Auth is successful (cached)"
+					ev.Result = stats.SUCCESS_AUTH_CACHE
+					ev.RetCode = 200
+					return
+				}
+			}
+		}
+
+		err := auth.Authenticate(ev.Username, ev.Password, config)
+		if err == nil {
+			ev.Message = "Auth is succesful (not cached)"
+			ev.Result = stats.SUCCESS_AUTH
+			ev.RetCode = 200
+			if auth_cache != nil {
+				auth_cache.Add(ev.Username, hmac_b, cache.DefaultExpiration)
+			}
+		} else {
+			if errwrap.ContainsType(err, new(auth.LdapOpError)) {
+				ev.Message = fmt.Sprintf("LDAP operational error: %s", err.Error())
+				ev.Result = stats.OP_ERROR
+				ev.RetCode = 500
+			} else if errwrap.ContainsType(err, new(auth.LdapAuthError)) {
+				ev.Message = "Auth failed"
+				ev.Result = stats.FAIL_AUTH
+				ev.RetCode = 401
+				if config.Http.FailedAuthDelay > 0 {
+					// in auth context it is good practice to add a bit of random to counter time based attacks
+					n, err := rand.Int(rand.Reader, big.NewInt(1000))
+					if err != nil {
+						log.Log.WithError(err).Error("Error generating random number. Check your rand source.")
+					} else {
+						time.Sleep(time.Duration(n.Int64()) * time.Millisecond)
+					}
+					time.Sleep(time.Duration(config.Http.FailedAuthDelay) * time.Second)
+				}
+			} else {
+				ev.Message = fmt.Sprintf("Unexpected error: %s", err.Error())
+				ev.Result = stats.OP_ERROR
+				ev.RetCode = 500
+			}
+		}
+	}
+
+	mux.HandleFunc("/", main_handler)
+
 
 	done := make(chan bool, 1)
 	go func() {

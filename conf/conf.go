@@ -16,6 +16,7 @@ import (
 type GlobalConfig struct {
 	Ldap  LdapConfig  `mapstructure:"ldap" toml:"ldap"`
 	Http  HttpConfig  `mapstructure:"http" toml:"http"`
+	Api   ApiConfig   `mapstructure:"api" toml:"api"`
 	Cache CacheConfig `mapstructure:"cache" toml:"cache"`
 	Redis RedisConfig `mapstructure:"redis" toml:"redis"`
 }
@@ -34,6 +35,11 @@ type LdapConfig struct {
 	Cert             string `mapstructure:"certificate" toml:"certificate"`
 	Key              string `mapstructure:"key" toml:"key"`
 	Insecure         bool   `mapstructure:"insecure" toml:"insecure"`
+}
+
+type ApiConfig struct {
+	BindAddr string `mapstructure:"bind_addr" toml:"bind_addr"`
+	Port     uint32 `mapstructure:"port" toml:"port"`
 }
 
 type HttpConfig struct {
@@ -165,6 +171,10 @@ func (c *GlobalConfig) Check() error {
 		return fmt.Errorf("HTTPS is active: specify the HTTPS certificate and the HTTPS private key")
 	}
 
+	if c.Api.Port == 0 {
+		return fmt.Errorf("API HTTP port can't be 0")
+	}
+
 	if c.Redis.Port == 0 {
 		return fmt.Errorf("Redis port can't be 0")
 	}
@@ -208,6 +218,9 @@ func Load(dirname string) (*GlobalConfig, error) {
 	v.SetDefault("http.certificate", "")
 	v.SetDefault("http.key", "")
 
+	v.SetDefault("api.bind_addr", "127.0.0.1")
+	v.SetDefault("api.port", 8081)
+
 	v.SetDefault("cache.expires_seconds", 300)
 	v.SetDefault("cache.secret", "")
 
@@ -247,6 +260,9 @@ func Load(dirname string) (*GlobalConfig, error) {
 	v.BindEnv("http.https", "NAL_HTTPS")
 	v.BindEnv("http.certificate", "NAL_HTTPS_CERTIFICATE")
 	v.BindEnv("http.key", "NAL_HTTPS_KEY")
+
+	v.BindEnv("api.bind_addr", "NAL_API_ADDR")
+	v.BindEnv("api.port", "NAL_API_PORT")
 
 	v.BindEnv("cache.expires_seconds", "NAL_CACHE_EXPIRES")
 	v.BindEnv("cache.secret", "NAL_CACHE_SECRET")

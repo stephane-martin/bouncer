@@ -8,16 +8,18 @@ import (
 	"github.com/go-redis/redis"
 	"github.com/stephane-martin/nginx-auth-ldap/conf"
 	"github.com/stephane-martin/nginx-auth-ldap/log"
+	"github.com/stephane-martin/nginx-auth-ldap/stats"
 )
 
 type Janitor struct {
 	Config       *conf.GlobalConfig
 	Client       *redis.Client
 	stop_chan    chan bool
-	MaxSsetIndex int
+	MaxSsetIndex int64
 }
 
-func NewJanitor(config *conf.GlobalConfig, client *redis.Client, idx int) (janitor *Janitor) {
+func NewJanitor(config *conf.GlobalConfig, client *redis.Client) (janitor *Janitor) {
+	idx := int64(stats.ResultTypes[len(stats.ResultTypes) - 1])
 	return &Janitor{Config: config, Client: client, MaxSsetIndex: idx}
 }
 
