@@ -47,6 +47,11 @@ func init() {
 	RootCmd.AddCommand(serveCmd)
 }
 
+func sighup() {
+	p, _ := os.FindProcess(os.Getpid())
+	p.Signal(syscall.SIGHUP)
+}
+
 func serve() {
 	disable_timestamps := false
 	disable_colors := false
@@ -284,8 +289,7 @@ func StartApi(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Serv
 			// first reply that the health check is negative
 			w.WriteHeader(500)
 			// then send signal to myself to stop the HTTP server
-			p, _ := os.FindProcess(os.Getpid())
-			p.Signal(syscall.SIGHUP)
+			sighup()
 		} else {
 			// we're alive
 			w.WriteHeader(200)
@@ -295,8 +299,7 @@ func StartApi(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Serv
 	reload_handler := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "POST" {
 			w.WriteHeader(200)
-			p, _ := os.FindProcess(os.Getpid())
-			p.Signal(syscall.SIGHUP)
+			sighup()
 		} else {
 			w.WriteHeader(400)
 		}
@@ -323,8 +326,7 @@ func StartApi(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Serv
 		if errwrap.ContainsType(err, new(auth.LdapOpError)) {
 			w.WriteHeader(500)
 			log.Log.WithError(err).WithField("username", username).Error("LDAP operational error happened in /auth")
-			p, _ := os.FindProcess(os.Getpid())
-			p.Signal(syscall.SIGHUP)
+			sighup()
 			return
 		} else if errwrap.ContainsType(err, new(auth.LdapAuthError)) {
 			w.WriteHeader(403)
@@ -332,8 +334,7 @@ func StartApi(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Serv
 		} else {
 			w.WriteHeader(500)
 			log.Log.WithError(err).WithField("username", username).Error("Unexpected error happened in /auth")
-			p, _ := os.FindProcess(os.Getpid())
-			p.Signal(syscall.SIGHUP)
+			sighup()
 			return
 		}
 	}
@@ -435,8 +436,7 @@ func StartHttp(config *conf.GlobalConfig, redis_client *redis.Client) (*http.Ser
 
 		defer func() {
 			if ev.RetCode == 500 {
-				p, _ := os.FindProcess(os.Getpid())
-				p.Signal(syscall.SIGHUP)
+				sighup()
 			}
 		}()
 
