@@ -15,6 +15,7 @@ import (
 const TOTAL_REQUESTS = "nginx-auth-ldap-nb-total-requests"
 const SET_REQUESTS_TPL = "nginx-auth-ldap-sset-%d"
 const COUNTER_TPL = "nginx-auth-ldap-counter-%s"
+const NOTIFICATIONS_REDIS_CHAN = "nginx-auth-ldap-notifications"
 
 type HitsMeasure struct {
 	Period        string `json:"period"`
@@ -141,6 +142,7 @@ func (s *StatsManager) Store(e *model.Event) error {
 		pipe := s.Client.TxPipeline()
 		pipe.ZAdd(set, redis.Z{Score: score, Member: value})
 		pipe.HIncrBy(TOTAL_REQUESTS, strconv.FormatInt(int64(e.Result), 10), 1)
+		pipe.Publish(NOTIFICATIONS_REDIS_CHAN, string(value))
 		_, err = pipe.Exec()
 		if err != nil {
 			return errwrap.Wrapf("Error writing an event to Redis: {{err}}", err)

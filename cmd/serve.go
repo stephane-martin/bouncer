@@ -72,7 +72,7 @@ func serve() {
 			log.Log.Hooks.Add(hook)
 			f, err := os.OpenFile("/dev/null", os.O_WRONLY, 0600)
 			if err == nil {
-				log.Log.Out = f
+	log.Log.Out = f
 				defer f.Close()
 			}
 		} else {
@@ -513,7 +513,7 @@ func StartHttp(config *conf.GlobalConfig, mngr *stats.StatsManager) (*http.Serve
 		}
 
 		if errwrap.ContainsType(err, new(auth.LdapAuthError)) {
-			ev.Message = "Auth failed"
+			ev.Message = fmt.Sprintf("Auth failed: %s", err.Error())
 			ev.Result = model.FAIL_AUTH
 			ev.RetCode = 401
 			if config.Http.FailedAuthDelay > 0 {
