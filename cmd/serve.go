@@ -72,7 +72,7 @@ func serve() {
 			log.Log.Hooks.Add(hook)
 			f, err := os.OpenFile("/dev/null", os.O_WRONLY, 0600)
 			if err == nil {
-	log.Log.Out = f
+				log.Log.Out = f
 				defer f.Close()
 			}
 		} else {
@@ -153,7 +153,9 @@ func do_serve() bool {
 	sig_chan := make(chan os.Signal, 1)
 	signal.Notify(sig_chan, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 
-	var ctx context.Context
+	ctx := context.Background()
+	api_ctx, cancel_api_ctx := context.WithTimeout(context.Background(), time.Duration(time.Second))
+	defer cancel_api_ctx()
 	var cancel_ctx context.CancelFunc
 	if config.Http.ShutdownTimeout > 0 {
 		ctx, cancel_ctx = context.WithTimeout(context.Background(), time.Duration(config.Http.ShutdownTimeout)*time.Second)
@@ -170,7 +172,7 @@ func do_serve() bool {
 		signal.Stop(sig_chan)
 		close(sig_chan)
 		log.Log.Error("Abrupt termination of the HTTP server. Sleeping a while and restarting.")
-		api.Shutdown(nil)
+		api.Shutdown(api_ctx)
 		<-api_done
 		mngr.Counter(model.HTTP_ABRUPT_TERM).Incr()
 		time.Sleep(time.Duration(30) * time.Second)
@@ -195,7 +197,7 @@ func do_serve() bool {
 		case syscall.SIGTERM, syscall.SIGINT:
 			log.Log.Info("SIGTERM received: stopping the HTTP servers")
 			server.Shutdown(ctx)
-			api.Shutdown(nil)
+			api.Shutdown(api_ctx)
 			<-done
 			<-api_done
 			mngr.Counter(model.SIGTERM_SIGINT).Incr()
@@ -203,14 +205,14 @@ func do_serve() bool {
 		case syscall.SIGHUP:
 			log.Log.Info("SIGHUP received: reloading configuration and restart the HTTP servers")
 			server.Shutdown(ctx)
-			api.Shutdown(nil)
+			api.Shutdown(api_ctx)
 			<-done
 			<-api_done
 			mngr.Counter(model.SIGHUP).Incr()
 			return true
 		default:
 			server.Shutdown(ctx)
-			api.Shutdown(nil)
+			api.Shutdown(api_ctx)
 			<-done
 			<-api_done
 			mngr.Counter(model.UNKNOWN_SIG).Incr()
@@ -294,8 +296,10 @@ func StartApi(config *conf.GlobalConfig, mngr *stats.StatsManager) (*http.Server
 	}
 
 	check_handler := func(w http.ResponseWriter, r *http.Request) {
-		if auth.CheckLdapConn(config) != nil {
+		err := auth.CheckLdapConn(config)
+		if err != nil {
 			// we have a connection problem to LDAP...
+			log.Log.WithError(err).Error("Check LDAP connection failed")
 			// first reply that the health check is negative
 			w.WriteHeader(500)
 			// then send signal to myself to stop the HTTP server
@@ -349,6 +353,37 @@ func StartApi(config *conf.GlobalConfig, mngr *stats.StatsManager) (*http.Server
 		}
 	}
 
+	events_handler := func(w http.ResponseWriter, r *http.Request) {
+		f, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "Streaming unsupported!", http.StatusInternalServerError)
+			return
+		}
+		notify := w.(http.CloseNotifier).CloseNotify()
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+
+		pubsub := mngr.Client.Subscribe(stats.NOTIFICATIONS_REDIS_CHAN)
+		defer pubsub.Close()
+		msg_chan := pubsub.Channel()
+		restart := true
+
+		for restart {
+			select {
+			case <-notify:
+				restart = false
+			case msg, more := <-msg_chan:
+				if more {
+					fmt.Fprintf(w, "data: %s\n\n", msg.Payload)
+					f.Flush()
+				} else {
+					restart = false
+				}
+			}
+		}
+	}
+
 	stats_handler := func(w http.ResponseWriter, r *http.Request) {
 		// report statistics
 
@@ -393,6 +428,7 @@ func StartApi(config *conf.GlobalConfig, mngr *stats.StatsManager) (*http.Server
 
 	if config.Redis.Enabled {
 		mux.HandleFunc("/stats", stats_handler)
+		mux.HandleFunc("/events", events_handler)
 	}
 
 	done := make(chan bool, 1)
@@ -426,6 +462,7 @@ func StartHttp(config *conf.GlobalConfig, mngr *stats.StatsManager) (*http.Serve
 	var secret []byte
 	var err error
 	var auth_cache *cache.Cache
+	event_chan := make(chan *model.Event, 100)
 
 	if config.Cache.Expires > 0 {
 		expires := time.Duration(config.Cache.Expires) * time.Second
@@ -442,37 +479,14 @@ func StartHttp(config *conf.GlobalConfig, mngr *stats.StatsManager) (*http.Serve
 
 		ev := EventFromRequest(r, config)
 
-		defer func() {
-			if ev.RetCode == 500 {
-				sighup()
-			}
-		}()
-
-		defer func() {
-			l := log.Log.WithField("username", ev.Username).WithField("uri", ev.Uri).WithField("retcode", ev.RetCode).WithField("result", ev.Result)
-			if ev.RetCode == 200 {
-				l.Debug(ev.Message)
-			} else if ev.RetCode == 500 {
-				l.Warn(ev.Message)
-			} else {
-				l.Info(ev.Message)
-			}
-		}()
-
-		if config.Redis.Enabled {
-			defer func() {
-				err := mngr.Store(ev)
-				if err != nil {
-					log.Log.WithError(err).Error("Error happened when storing a request in Redis")
-				}
-			}()
-		}
-
+		// make sure we post an answer
 		defer func() {
 			if ev.RetCode == 401 {
 				w.Header().Add(config.Http.AuthenticateHeader, fmt.Sprintf("Basic realm=\"%s\"", config.Http.Realm))
 			}
 			w.WriteHeader(ev.RetCode)
+			// perform post-processing in a separate goroutine
+			event_chan <- ev
 		}()
 
 		if ev.RetCode != 0 {
@@ -536,6 +550,32 @@ func StartHttp(config *conf.GlobalConfig, mngr *stats.StatsManager) (*http.Serve
 
 	mux.HandleFunc("/", main_handler)
 
+	go func() {
+		// postprocessing events
+		for ev := range event_chan {
+			// log the event
+			l := log.Log.WithField("username", ev.Username).WithField("uri", ev.Uri).WithField("retcode", ev.RetCode).WithField("result", ev.Result)
+			if ev.RetCode == 200 {
+				l.Debug(ev.Message)
+			} else if ev.RetCode == 500 {
+				l.Warn(ev.Message)
+			} else {
+				l.Info(ev.Message)
+			}
+			// write it to Redis
+			if config.Redis.Enabled {
+				err := mngr.Store(ev)
+				if err != nil {
+					log.Log.WithError(err).Error("Error happened when storing a request in Redis")
+				}
+			}
+			// restart and wait if there was an operational error
+			if ev.RetCode == 500 {
+				sighup()
+			}
+		}
+	}()
+
 	done := make(chan bool, 1)
 	go func() {
 		log.Log.WithField("bind", server.Addr).Info("Starting HTTP server")
@@ -545,6 +585,11 @@ func StartHttp(config *conf.GlobalConfig, mngr *stats.StatsManager) (*http.Serve
 		} else {
 			err = server.ListenAndServe()
 		}
+
+		close(event_chan)
+		done <- true
+		close(done)
+
 		if err != nil {
 			switch err := err.(type) {
 			default:
@@ -553,8 +598,7 @@ func StartHttp(config *conf.GlobalConfig, mngr *stats.StatsManager) (*http.Serve
 				log.Log.WithError(err).Error("HTTP server operational error")
 			}
 		}
-		done <- true
-		close(done)
+
 	}()
 
 	return server, done

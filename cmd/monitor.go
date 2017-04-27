@@ -72,8 +72,12 @@ func monitor() {
 			signal.Stop(sig_chan)
 			close(sig_chan)
 			restart = false
-		case msg := <-msg_chan:
-			fmt.Println(msg.Payload)
+		case msg, more := <-msg_chan:
+			if more {
+				fmt.Println(msg.Payload)
+			} else {
+				restart = false
+			}
 		}
 	}
 
