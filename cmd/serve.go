@@ -136,15 +136,15 @@ func do_serve() bool {
 	}
 
 	for i, _ := range model.CounterNames {
-		mngr.NewCounter(i)
+		mngr.RegCounter(i)
 	}
 
-	mngr.NewCounter(model.RESTARTS).Incr()
+	mngr.Counter(model.RESTARTS).Incr()
 
 	err = auth.CheckLdapConn(config)
 	if err != nil {
 		log.Log.WithError(err).Error("Connection to LDAP failed. Sleeping a while and restarting.")
-		mngr.NewCounter(model.LDAP_CONN_ERROR).Incr()
+		mngr.Counter(model.LDAP_CONN_ERROR).Incr()
 		time.Sleep(time.Duration(30) * time.Second)
 		return true
 	}
@@ -172,7 +172,7 @@ func do_serve() bool {
 		log.Log.Error("Abrupt termination of the HTTP server. Sleeping a while and restarting.")
 		api.Shutdown(nil)
 		<-api_done
-		mngr.NewCounter(model.HTTP_ABRUPT_TERM).Incr()
+		mngr.Counter(model.HTTP_ABRUPT_TERM).Incr()
 		time.Sleep(time.Duration(30) * time.Second)
 		return true
 
@@ -182,7 +182,7 @@ func do_serve() bool {
 		log.Log.Error("Abrupt termination of the API server. Sleeping a while and restarting.")
 		server.Shutdown(ctx)
 		<-done
-		mngr.NewCounter(model.API_ABRUPT_TERM).Incr()
+		mngr.Counter(model.API_ABRUPT_TERM).Incr()
 		time.Sleep(time.Duration(30) * time.Second)
 		return true
 
@@ -198,7 +198,7 @@ func do_serve() bool {
 			api.Shutdown(nil)
 			<-done
 			<-api_done
-			mngr.NewCounter(model.SIGTERM_SIGINT).Incr()
+			mngr.Counter(model.SIGTERM_SIGINT).Incr()
 			return false
 		case syscall.SIGHUP:
 			log.Log.Info("SIGHUP received: reloading configuration and restart the HTTP servers")
@@ -206,14 +206,14 @@ func do_serve() bool {
 			api.Shutdown(nil)
 			<-done
 			<-api_done
-			mngr.NewCounter(model.SIGHUP).Incr()
+			mngr.Counter(model.SIGHUP).Incr()
 			return true
 		default:
 			server.Shutdown(ctx)
 			api.Shutdown(nil)
 			<-done
 			<-api_done
-			mngr.NewCounter(model.UNKNOWN_SIG).Incr()
+			mngr.Counter(model.UNKNOWN_SIG).Incr()
 			return false
 		}
 	}

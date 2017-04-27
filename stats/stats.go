@@ -88,26 +88,23 @@ func (c *Counter) Incr() error {
 	return c.Client.Incr(name).Err()
 }
 
-func (c *Counter) Val() (map[string]int64, error) {
+func (c *Counter) Val() (string, int64, error) {
 	if c.Client == nil {
-		return nil, fmt.Errorf("No Redis client")
+		return "", 0, fmt.Errorf("No Redis client")
 	}
 	name := fmt.Sprintf(COUNTER_TPL, c.Name)
-	m := map[string]int64{}
 	s, err := c.Client.Get(name).Result()
 	if err != nil {
 		if err.Error() == "redis: nil" {
-			m[c.Name] = 0
-			return m, nil
+			return c.Name, 0, nil
 		}
-		return nil, err
+		return "", 0, err
 	}
 	v, err := strconv.ParseInt(s, 10, 64)
 	if err != nil {
-		return nil, err
+		return "", 0, err
 	}
-	m[c.Name] = v
-	return m, nil
+	return c.Name, v, nil
 }
 
 type StatsManager struct {
@@ -119,10 +116,12 @@ func NewStatsManager(c *redis.Client) *StatsManager {
 	return &StatsManager{Client: c, Counters: map[string]*Counter{}}
 }
 
-func (s *StatsManager) NewCounter(i model.CounterID) *Counter {
-	c := &Counter{Client: s.Client, Name: model.CounterNames[i]}
-	s.Counters[model.CounterNames[i]] = c
-	return c
+func (s *StatsManager) RegCounter(i model.CounterID) {
+	s.Counters[model.CounterNames[i]] = &Counter{Client: s.Client, Name: model.CounterNames[i]}
+}
+
+func (s *StatsManager) Counter(i model.CounterID) *Counter {
+	return s.Counters[model.CounterNames[i]]
 }
 
 func (s *StatsManager) Close() {
@@ -212,11 +211,13 @@ func (s *StatsManager) GetStats(all_ranges map[string]int64) (*PackOfMeasures, e
 
 	// get other counters
 	for _, c := range s.Counters {
-		v, err := c.Val()
+		m := map[string]int64{}
+		name, val, err := c.Val()
 		if err != nil {
 			return nil, errwrap.Wrapf("error getting counters from Redis: {{err}}", err)
 		}
-		measurements.Append(v)
+		m[name] = val
+		measurements.Append(m)
 	}
 
 	return measurements, nil
