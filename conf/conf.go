@@ -15,7 +15,7 @@ import (
 )
 
 type GlobalConfig struct {
-	Ldap  LdapConfig  `mapstructure:"ldap" toml:"ldap"`
+	Ldap  []LdapConfig  `mapstructure:"ldap" toml:"ldap"`
 	Http  HttpConfig  `mapstructure:"http" toml:"http"`
 	Api   ApiConfig   `mapstructure:"api" toml:"api"`
 	Cache CacheConfig `mapstructure:"cache" toml:"cache"`
@@ -36,6 +36,22 @@ type LdapConfig struct {
 	Cert             string `mapstructure:"certificate" toml:"certificate"`
 	Key              string `mapstructure:"key" toml:"key"`
 	Insecure         bool   `mapstructure:"insecure" toml:"insecure"`
+}
+
+var DefaultLdapConfig LdapConfig = LdapConfig{
+	Host: "127.0.0.1",
+	Port: 389,
+	AuthType: "directbind",
+	BindDn: "",
+	BindPassword: "",
+	UserSearchFilter: "(uid=%s)",
+	UserSearchBase: "ou=users,dc=example,dc=org",
+	UserDnTemplate: "uid=%s,ou=users,dc=example,dc=org",
+	TlsType: "none",
+	CA: "",
+	Cert: "",
+	Key: "",
+	Insecure: false,
 }
 
 type ApiConfig struct {
@@ -77,7 +93,7 @@ type RedisConfig struct {
 
 func New() *GlobalConfig {
 	return &GlobalConfig{
-		Ldap:  LdapConfig{},
+		Ldap:  []LdapConfig{},
 		Http:  HttpConfig{},
 		Cache: CacheConfig{},
 	}
@@ -127,41 +143,44 @@ func (c *GlobalConfig) GenerateSecret() (secret []byte, err error) {
 }
 
 func (c *GlobalConfig) Check() error {
-	if c.Ldap.Port == 0 {
-		return fmt.Errorf("LDAP port can't be 0")
-	}
 
-	switch c.Ldap.AuthType {
-	case "directbind":
-	case "search":
-	default:
-		return fmt.Errorf("LDAP auth_type must be 'search' or 'directbind'")
-	}
-
-	if c.Ldap.AuthType == "search" && (len(c.Ldap.BindDn) == 0 || len(c.Ldap.BindPassword) == 0) {
-		return fmt.Errorf("LDAP auth_type is 'search': specify 'bind_dn' and 'bind_password'")
-	}
-
-	if c.Ldap.AuthType == "search" && len(c.Ldap.UserSearchBase) == 0 {
-		return fmt.Errorf("LDAP auth_type is 'search': specify 'user_search_base'")
-	}
-
-	if c.Ldap.AuthType == "directbind" && len(c.Ldap.UserDnTemplate) == 0 {
-		return fmt.Errorf("LDAP auth_type is 'directbind': specify 'user_dn_template'")
-	}
-
-	switch c.Ldap.TlsType {
-	case "none":
-	case "starttls":
-	case "tls":
-	default:
-		return fmt.Errorf("LDAP tls_type must be 'none', 'starttls' or 'tls'")
-	}
-
-	if c.Ldap.TlsType == "tls" || c.Ldap.TlsType == "starttls" {
-		if !c.Ldap.Insecure && len(c.Ldap.CA) == 0 {
-			return fmt.Errorf("Specify the certificate authority 'ldap.certificate_authority' that is used to verify the LDAP server certificate")
+	
+	for _, l := range c.Ldap {
+		if l.Port == 0 {
+			return fmt.Errorf("LDAP port can't be 0")
 		}
+		switch l.AuthType {
+		case "directbind":
+		case "search":
+		default:
+			return fmt.Errorf("LDAP auth_type must be 'search' or 'directbind'")
+		}
+
+		if l.AuthType == "search" && (len(l.BindDn) == 0 || len(l.BindPassword) == 0) {
+			return fmt.Errorf("LDAP auth_type is 'search': specify 'bind_dn' and 'bind_password'")
+		}
+
+		if l.AuthType == "search" && len(l.UserSearchBase) == 0 {
+			return fmt.Errorf("LDAP auth_type is 'search': specify 'user_search_base'")
+		}
+
+		if l.AuthType == "directbind" && len(l.UserDnTemplate) == 0 {
+			return fmt.Errorf("LDAP auth_type is 'directbind': specify 'user_dn_template'")
+		}
+
+		switch l.TlsType {
+		case "none":
+		case "starttls":
+		case "tls":
+		default:
+			return fmt.Errorf("LDAP tls_type must be 'none', 'starttls' or 'tls'")
+		}
+
+		if l.TlsType == "tls" || l.TlsType == "starttls" {
+			if !l.Insecure && len(l.CA) == 0 {
+				return fmt.Errorf("Specify the certificate authority 'ldap.certificate_authority' that is used to verify the LDAP server certificate")
+			}
+		}	
 	}
 
 	if c.Http.Port == 0 {
@@ -190,20 +209,7 @@ func (c *GlobalConfig) Check() error {
 func Load(dirname, consul_addr, consul_prefix, consul_token, consul_datacenter string, consul_notify chan bool) (*GlobalConfig, chan bool, error) {
 	// we should close consul_notify in all cases
 	v := viper.New()
-
-	v.SetDefault("ldap.host", "127.0.0.1")
-	v.SetDefault("ldap.port", 389)
-	v.SetDefault("ldap.auth_type", "directbind")
-	v.SetDefault("ldap.bind_dn", "")
-	v.SetDefault("ldap.bind_password", "")
-	v.SetDefault("ldap.user_search_filter", "(uid=%s)")
-	v.SetDefault("ldap.user_search_base", "ou=users,dc=example,dc=org")
-	v.SetDefault("ldap.user_dn_template", "uid=%s,ou=users,dc=example,dc=org")
-	v.SetDefault("ldap.tls_type", "none")
-	v.SetDefault("ldap.certificate_authority", "")
-	v.SetDefault("ldap.certificate", "")
-	v.SetDefault("ldap.key", "")
-	v.SetDefault("ldap.insecure", false)
+	v.SetDefault("ldap", []LdapConfig{DefaultLdapConfig})
 
 	v.SetDefault("http.bind_addr", "0.0.0.0")
 	v.SetDefault("http.port", 8080)
@@ -234,6 +240,7 @@ func Load(dirname, consul_addr, consul_prefix, consul_token, consul_datacenter s
 	v.SetDefault("redis.enabled", false)
 	v.SetDefault("redis.expires_seconds", 86400)
 
+	/*
 	v.BindEnv("ldap.host", "NAL_LDAP_HOST")
 	v.BindEnv("ldap.port", "NAL_LDAP_PORT")
 	v.BindEnv("ldap.auth_type", "NAL_AUTH_TYPE")
@@ -247,6 +254,7 @@ func Load(dirname, consul_addr, consul_prefix, consul_token, consul_datacenter s
 	v.BindEnv("ldap.certificate", "NAL_LDAP_CERT")
 	v.BindEnv("ldap.key", "NAL_LDAP_KEY")
 	v.BindEnv("ldap.insecure", "NAL_LDAP_INSECURE")
+	*/
 
 	v.BindEnv("http.bind_addr", "NAL_HTTP_ADDR")
 	v.BindEnv("http.port", "NAL_HTTP_PORT")
@@ -337,6 +345,47 @@ func Load(dirname, consul_addr, consul_prefix, consul_token, consul_datacenter s
 			close(stop_chan)
 		}
 		return nil, nil, errwrap.Wrapf("Error parsing configuration", err)
+	}
+
+	/*
+	v.SetDefault("ldap.host", "127.0.0.1")
+	v.SetDefault("ldap.port", 389)
+	v.SetDefault("ldap.auth_type", "directbind")
+	v.SetDefault("ldap.bind_dn", "")
+	v.SetDefault("ldap.bind_password", "")
+	v.SetDefault("ldap.user_search_filter", "(uid=%s)")
+	v.SetDefault("ldap.user_search_base", "ou=users,dc=example,dc=org")
+	v.SetDefault("ldap.user_dn_template", "uid=%s,ou=users,dc=example,dc=org")
+	v.SetDefault("ldap.tls_type", "none")
+	v.SetDefault("ldap.certificate_authority", "")
+	v.SetDefault("ldap.certificate", "")
+	v.SetDefault("ldap.key", "")
+	v.SetDefault("ldap.insecure", false)
+	*/
+
+	// inject defaults into LDAP configurations
+	for i, _ := range conf.Ldap {
+		if conf.Ldap[i].Host == "" {
+			conf.Ldap[i].Host = "127.0.0.1"
+		}
+		if conf.Ldap[i].Port == 0 {
+			conf.Ldap[i].Port = 389
+		}
+		if conf.Ldap[i].AuthType == "" {
+			conf.Ldap[i].AuthType = "directbind"
+		}
+		if conf.Ldap[i].UserSearchFilter == "" {
+			conf.Ldap[i].UserSearchFilter = "(uid=%s)"
+		}
+		if conf.Ldap[i].UserSearchBase == "" {
+			conf.Ldap[i].UserSearchBase = "ou=users,dc=example,dc=org"
+		}
+		if conf.Ldap[i].UserDnTemplate == "" {
+			conf.Ldap[i].UserDnTemplate = "uid=%s,ou=users,dc=example,dc=org"
+		}
+		if conf.Ldap[i].TlsType == "" {
+			conf.Ldap[i].TlsType = "none"
+		}
 	}
 
 	err = conf.Check()

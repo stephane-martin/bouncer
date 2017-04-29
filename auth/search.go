@@ -9,25 +9,25 @@ import (
 	ldap "gopkg.in/ldap.v2"
 )
 
-func Search(username string, password string, config *conf.GlobalConfig) error {
+func Search(username string, password string, l *conf.LdapConfig) error {
 
-	conn, err := GetLdapClient(config)
+	conn, err := GetLdapClient(l)
 	if err != nil {
 		return errwrap.Wrapf("Error getting LDAP client: {{err}}", &LdapOpError{err})		
 	}
 	defer conn.Close()
 
-	err = conn.Bind(config.Ldap.BindDn, config.Ldap.BindPassword)
+	err = conn.Bind(l.BindDn, l.BindPassword)
 	if err != nil {
 		return errwrap.Wrapf("LDAP Bind failed. Incorrect Bind DN or Bind password? : {{err}}", &LdapOpError{err})
 	}
 
-	filter := fmt.Sprintf(config.Ldap.UserSearchFilter, username)
+	filter := fmt.Sprintf(l.UserSearchFilter, username)
 	log.Log.WithField("filter", filter).Debug("Searching this user")
 
 	// Search for the given username
 	searchRequest := ldap.NewSearchRequest(
-		config.Ldap.UserSearchBase,
+		l.UserSearchBase,
 		ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
 		filter,
 		[]string{"dn"},

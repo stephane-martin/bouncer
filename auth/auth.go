@@ -3,6 +3,7 @@ package auth
 import (
 	"crypto/tls"
 	"fmt"
+	"math/rand"
 
 	"github.com/hashicorp/errwrap"
 	"github.com/stephane-martin/nginx-auth-ldap/conf"
@@ -34,29 +35,51 @@ func (e *LdapAuthError) Error() string {
 	return e.Err.Error()
 }
 
-func Authenticate(username string, password string, config *conf.GlobalConfig) error {
-	if config.Ldap.AuthType == "directbind" {
-		return DirectBind(username, password, config)
-	} else if config.Ldap.AuthType == "search" {
-		return Search(username, password, config)
-	} else {
-		return fmt.Errorf("Unknown LDAP authentication type")
+func Authenticate(username string, password string, c *conf.GlobalConfig) error {
+	var err error
+	// try each LDAP configuration in a random order until we get a response
+	for _, i := range rand.Perm(len(c.Ldap)) {
+		l := c.Ldap[i]
+		if l.AuthType == "directbind" {
+			err = DirectBind(username, password, &l)
+		} else if l.AuthType == "search" {
+			err = Search(username, password, &l)
+		} else {
+			return fmt.Errorf("Unknown LDAP authentication type")
+		}
+		if err == nil {
+			return err
+		}
+		if errwrap.ContainsType(err, new(LdapOpError)) {
+			// Operational Error => try next LDAP server...
+			continue
+		}
+		// authentication fails, return the failure
+		return err
 	}
+	// return the last (operational) error
+	return err
 }
 
-func GetLdapClient(c *conf.GlobalConfig) (conn *ldap.Conn, err error) {
+func GetOneLdapConfig(c *conf.GlobalConfig) *conf.LdapConfig {
+	return &c.Ldap[rand.Intn(len(c.Ldap))]
+}
+
+
+func GetLdapClient(l *conf.LdapConfig) (conn *ldap.Conn, err error) {
+
 	var tls_config *tls.Config
 
-	if c.Ldap.TlsType == "starttls" || c.Ldap.TlsType == "tls" {
-		tls_config, err = mytls.GetTLSConfig(c.Ldap.Cert, c.Ldap.Key, c.Ldap.CA, c.Ldap.Insecure)
+	if l.TlsType == "starttls" || l.TlsType == "tls" {
+		tls_config, err = mytls.GetTLSConfig(l.Cert, l.Key, l.CA, l.Insecure)
 		if err != nil {
 			return nil, errwrap.Wrapf("Error building the LDAP TLS configuration: {{err}}", &LdapOpError{err})
 		}
 	}
 
-	addr := fmt.Sprintf("%s:%d", c.Ldap.Host, c.Ldap.Port)
+	addr := fmt.Sprintf("%s:%d", l.Host, l.Port)
 
-	if c.Ldap.TlsType == "tls" {
+	if l.TlsType == "tls" {
 		conn, err = ldap.DialTLS("tcp", addr, tls_config)
 	} else {
 		conn, err = ldap.Dial("tcp", addr)
@@ -65,7 +88,7 @@ func GetLdapClient(c *conf.GlobalConfig) (conn *ldap.Conn, err error) {
 		return nil, errwrap.Wrapf("Error connecting to the LDAP server: {{err}}", &LdapOpError{err})
 	}
 
-	if c.Ldap.TlsType == "starttls" {
+	if l.TlsType == "starttls" {
 		err = conn.StartTLS(tls_config)
 		if err != nil {
 			return nil, errwrap.Wrapf("Error performing StartTLS: {{err}}", &LdapOpError{err})
@@ -75,13 +98,26 @@ func GetLdapClient(c *conf.GlobalConfig) (conn *ldap.Conn, err error) {
 }
 
 func CheckLdapConn(c *conf.GlobalConfig) error {
-	conn, err := GetLdapClient(c)
+	// check that we can connect to at least one LDAP server
+	var err error
+	for _, l := range c.Ldap {
+		err = CheckOneLdapConn(&l)
+		if err == nil {
+			return nil
+		}
+	}
+	// return last error
+	return err
+}
+
+func CheckOneLdapConn(l *conf.LdapConfig) error {
+	conn, err := GetLdapClient(l)
 	if err != nil {
 		return errwrap.Wrapf("Error connecting to LDAP: {{err}}", err)
 	}
 	defer conn.Close()
-	if c.Ldap.AuthType == "search" {
-		err = conn.Bind(c.Ldap.BindDn, c.Ldap.BindPassword)
+	if l.AuthType == "search" {
+		err = conn.Bind(l.BindDn, l.BindPassword)
 		if err != nil {
 			return errwrap.Wrapf("LDAP Bind failed. Incorrect Bind DN or Bind password? : {{err}}", &LdapOpError{err})
 		}

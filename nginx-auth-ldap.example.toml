@@ -1,4 +1,4 @@
-[ldap]
+[[ldap]]
 # LDAP directory host (default "127.0.0.1")
 host = "127.0.0.1"
 # LDAP directory port (default 389)
@@ -47,6 +47,11 @@ key = "" # (default "")
 # if you don't want to check the LDAP server certificate, set to true
 # in that case you don't need to provide 'certificate_authority'
 insecure = false # default 'false'
+
+# [[ldap]]
+# ...
+# you can provide multiple LDAP configurations. The authentications will be
+# randomly balanced between them.
 
 [api]
 # bind address for the API service
