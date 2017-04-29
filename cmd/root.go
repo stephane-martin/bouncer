@@ -15,6 +15,10 @@ var LogFilename string
 var PidFilename string
 var Syslog bool
 var Json bool
+var ConsulAddr string
+var ConsulPrefix string
+var ConsulToken string
+var ConsulDatacenter string
 
 var RootCmd = &cobra.Command{
 	Use:   "nginx-auth-ldap",
@@ -38,7 +42,11 @@ func init() {
 	RootCmd.PersistentFlags().StringVar(&LogFilename, "logfile", "", "if specified, write logs to that file instead of stdout/stderr")
 	RootCmd.PersistentFlags().StringVar(&PidFilename, "pidfile", "", "if specified, write PID there")
 	RootCmd.PersistentFlags().BoolVar(&Syslog, "syslog", false, "if specified, send logs to the local syslog instead of stdout/stderr")
-	RootCmd.PersistentFlags().BoolVar(&Json, "json", false, "if specified, write logs in JSON format")	
+	RootCmd.PersistentFlags().BoolVar(&Json, "json", false, "if specified, write logs in JSON format")
+	RootCmd.PersistentFlags().StringVar(&ConsulAddr, "consul", "", "Consul scheme, host and port (eg http://A.B.C.D:PORT)")
+	RootCmd.PersistentFlags().StringVar(&ConsulPrefix, "prefix", "nginx-auth-ldap", "nginx-auth-ldap prefix in Consul KV")
+	RootCmd.PersistentFlags().StringVar(&ConsulToken, "token", "", "Consul token")
+	RootCmd.PersistentFlags().StringVar(&ConsulDatacenter, "datacenter", "", "Consul datacenter to query (leave empty for default)")
 }
 
 func init_logging() {

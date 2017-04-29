@@ -18,7 +18,7 @@ var resetstatsCmd = &cobra.Command{
 	Long:  `reset-stats erases the metrics that were persisted in Redis.`,
 	Run: func(cmd *cobra.Command, args []string) {
 
-		config, err := conf.Load(ConfigDir)
+		config, _, err := conf.Load(ConfigDir, ConsulAddr, ConsulPrefix, ConsulToken, ConsulDatacenter, nil)
 		if err != nil {
 			log.Log.WithError(err).Error("Error loading configuration")
 			os.Exit(-1)

@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/errwrap"
 	"github.com/spf13/viper"
 	"github.com/stephane-martin/nginx-auth-ldap/log"
+	"github.com/stephane-martin/nginx-auth-ldap/consul"
 )
 
 type GlobalConfig struct {
@@ -186,7 +187,8 @@ func (c *GlobalConfig) Check() error {
 	return nil
 }
 
-func Load(dirname string) (*GlobalConfig, error) {
+func Load(dirname, consul_addr, consul_prefix, consul_token, consul_datacenter string, consul_notify chan bool) (*GlobalConfig, chan bool, error) {
+	// we should close consul_notify in all cases
 	v := viper.New()
 
 	v.SetDefault("ldap.host", "127.0.0.1")
@@ -291,23 +293,69 @@ func Load(dirname string) (*GlobalConfig, error) {
 	} else {
 		switch err := err.(type) {
 		default:
-			return nil, errwrap.Wrapf("Error reading the configuration file", err)
+			if consul_notify != nil {
+				close(consul_notify)
+			}
+			return nil, nil, errwrap.Wrapf("Error reading the configuration file", err)
 		case viper.ConfigFileNotFoundError:
-			log.Log.WithError(err).Info("No configuration file was found")
+			log.Log.WithError(err).Debug("No configuration file was found")
+		}
+	}
+
+	var stop_chan chan bool
+	var config_in_consul map[string]string
+
+	if len(consul_addr) > 0 {
+		consul_client, err := consul.NewClient(consul_addr, consul_token, consul_datacenter)
+		if err != nil {
+			if consul_notify != nil {
+				close(consul_notify)
+			}
+			return nil, nil, err
+		}
+		consul_prefix += "/conf"
+		if consul_notify == nil {
+			config_in_consul, _, err = consul.WatchTree(consul_client, consul_prefix, nil) 
+		} else {
+			// responsability to close consul_notify is transfered to WatchTree
+			config_in_consul, stop_chan, err = consul.WatchTree(consul_client, consul_prefix, consul_notify) 
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		ParseConfigFromConsul(v, consul_prefix, config_in_consul)
+	} else {
+		if consul_notify != nil {
+			close(consul_notify)
 		}
 	}
 
 	conf := New()
 	err = v.Unmarshal(conf)
 	if err != nil {
-		return nil, errwrap.Wrapf("Error parsing configuration", err)
+		if stop_chan != nil {
+			close(stop_chan)
+		}
+		return nil, nil, errwrap.Wrapf("Error parsing configuration", err)
 	}
 
 	err = conf.Check()
 	if err != nil {
-		return nil, err
+		if stop_chan != nil {
+			close(stop_chan)
+		}
+		return nil, nil, err
 	}
 
-	return conf, nil
+	return conf, stop_chan, nil
 
 }
+
+func ParseConfigFromConsul(vi *viper.Viper, prefix string, c map[string]string) {
+	for k, v := range c {
+		k = strings.Replace(strings.Trim(k[len(prefix):len(k)], "/"), "/", ".", -1)
+		log.Log.WithField(k, v).Debug("Config from consul")
+		vi.Set(k, v)
+	}
+}
+

@@ -32,7 +32,7 @@ var statsCmd = &cobra.Command{
 	Short: "Display the metrics",
 	Long:  `Gather information from Redis and print metrics to stdout.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		config, err := conf.Load(ConfigDir)
+		config, _, err := conf.Load(ConfigDir, ConsulAddr, ConsulPrefix, ConsulToken, ConsulDatacenter, nil)
 		if err != nil {
 			log.Log.WithError(err).Error("Error loading configuration")
 			os.Exit(-1)

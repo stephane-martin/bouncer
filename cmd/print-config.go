@@ -16,7 +16,7 @@ var printconfigCmd = &cobra.Command{
 	Long: `You can use print-config to check what is the real configuration
 that nginx-auth-ldap will use, merging your configuration and the defaults.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		config, err := conf.Load(ConfigDir)
+		config, _, err := conf.Load(ConfigDir, ConsulAddr, ConsulPrefix, ConsulToken, ConsulDatacenter, nil)
 		if err != nil {
 			log.Log.WithError(err).Error("Error loading configuration")
 			os.Exit(-1)

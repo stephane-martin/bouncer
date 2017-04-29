@@ -28,8 +28,18 @@ It is also possible to configure nginx-auth-ldap through environment variables.
 See [conf.go](https://github.com/stephane-martin/nginx-auth-ldap/blob/master/conf/conf.go)
 for the mappings.
 
-(So it is possible to store the nginx-auth-ldap into consul.
-Use [envconsul](https://github.com/hashicorp/envconsul) to push the configuration.)
+Consul KV can be used too. Put the parameters under `nginx-auth-ldap/conf`. For
+example:
+
+```
+consul kv put -http-addr=127.0.0.1:8500 nginx-auth-ldap/conf/cache/expires_seconds 180
+consul kv put -http-addr=127.0.0.1:8500 nginx-auth-ldap/conf/http/realm 'My Realm'
+nginx-auth-ldap serve --loglevel=debug --consul=http://127.0.0.1:8500
+```
+
+When `--consul` is provided, nginx-auth-ldap will watch for changes in Consul
+and restart if necessary.
+
 
 # Running
 

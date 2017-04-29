@@ -31,7 +31,7 @@ works for a single username and password.`,
 			os.Exit(-1)
 		}
 
-		config, err := conf.Load(ConfigDir)
+		config, _, err := conf.Load(ConfigDir, ConsulAddr, ConsulPrefix, ConsulToken, ConsulDatacenter, nil)
 		if err != nil {
 			log.Log.WithError(err).Error("Error loading configuration")
 			os.Exit(-1)

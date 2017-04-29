@@ -110,15 +110,32 @@ func serve() {
 }
 
 func do_serve() bool {
-	mngr := stats.NewStatsManager(nil)
-	defer mngr.Close()
+	var notify_updated_conf chan bool
+	var stop_chan chan bool
+	var err error
+	var config *conf.GlobalConfig 
 
-	config, err := conf.Load(ConfigDir)
+	if len(ConsulAddr) > 0 {
+		notify_updated_conf = make(chan bool, 100)	// todo: size? // notify_updated_conf will be closed by conf.Load in all cases
+		config, stop_chan, err = conf.Load(ConfigDir, ConsulAddr, ConsulPrefix, ConsulToken, ConsulDatacenter, notify_updated_conf)
+	} else {
+		notify_updated_conf = make(chan bool, 1) // dummy, won't receive anything
+		defer close(notify_updated_conf)
+		config, _, err = conf.Load(ConfigDir, "", "", "", "", nil)
+	}
+
 	if err != nil {
 		log.Log.WithError(err).Error("Error loading configuration. Sleeping a while and restarting.")
 		time.Sleep(time.Duration(30) * time.Second)
 		return true
 	}
+	// it is our job to close stop_chan when we are not interested in consul config updates anymore
+	if stop_chan != nil {
+		defer close(stop_chan)
+	}
+
+	mngr := stats.NewStatsManager(nil)
+	defer mngr.Close()
 
 	if config.Redis.Enabled {
 		err = config.CheckRedisConn()
@@ -186,6 +203,16 @@ func do_serve() bool {
 		<-done
 		mngr.Counter(model.API_ABRUPT_TERM).Incr()
 		time.Sleep(time.Duration(30) * time.Second)
+		return true
+
+	case <-notify_updated_conf:
+		signal.Stop(sig_chan)
+		close(sig_chan)
+		log.Log.Info("New configuration was notified by Consul: restarting")
+		server.Shutdown(ctx)
+		api.Shutdown(api_ctx)
+		<-done
+		<-api_done
 		return true
 
 	case sig := <-sig_chan:

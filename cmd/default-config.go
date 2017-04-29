@@ -29,7 +29,7 @@ var defaultconfigCmd = &cobra.Command{
 	Short: "Prints the default configuration",
 	Long:  "Prints the default configuration",
 	Run: func(cmd *cobra.Command, args []string) {
-		config, err := conf.Load("/nonexistent")
+		config, _, err := conf.Load("/nonexistent", "", "", "", "", nil)
 		if err != nil {
 			log.Log.WithError(err).Error("Error loading configuration")
 			os.Exit(-1)
