@@ -7,6 +7,7 @@ import (
 
 	"github.com/hashicorp/errwrap"
 	"github.com/stephane-martin/nginx-auth-ldap/conf"
+	"github.com/stephane-martin/nginx-auth-ldap/log"
 	mytls "github.com/stephane-martin/nginx-auth-ldap/tls"
 	ldap "gopkg.in/ldap.v2"
 )
@@ -52,6 +53,7 @@ func Authenticate(username string, password string, c *conf.GlobalConfig) error 
 		}
 		if errwrap.ContainsType(err, new(LdapOpError)) {
 			// Operational Error => try next LDAP server...
+			log.Log.WithError(err).Warn("LDAP operational error")
 			continue
 		}
 		// authentication fails, return the failure
@@ -64,7 +66,6 @@ func Authenticate(username string, password string, c *conf.GlobalConfig) error 
 func GetOneLdapConfig(c *conf.GlobalConfig) *conf.LdapConfig {
 	return &c.Ldap[rand.Intn(len(c.Ldap))]
 }
-
 
 func GetLdapClient(l *conf.LdapConfig) (conn *ldap.Conn, err error) {
 

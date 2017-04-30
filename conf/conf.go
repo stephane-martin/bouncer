@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"strings"
+	"strconv"
 
 	"github.com/BurntSushi/toml"
 	"github.com/go-redis/redis"
@@ -321,7 +322,6 @@ func Load(dirname, consul_addr, consul_prefix, consul_token, consul_datacenter s
 			}
 			return nil, nil, err
 		}
-		consul_prefix += "/conf"
 		if consul_notify == nil {
 			config_in_consul, _, err = consul.WatchTree(consul_client, consul_prefix, nil) 
 		} else {
@@ -346,22 +346,12 @@ func Load(dirname, consul_addr, consul_prefix, consul_token, consul_datacenter s
 		}
 		return nil, nil, errwrap.Wrapf("Error parsing configuration", err)
 	}
+	
+	if len(config_in_consul) > 0 {
+		ParseLdapConfigFromConsul(conf, consul_prefix, config_in_consul)
+	}
 
-	/*
-	v.SetDefault("ldap.host", "127.0.0.1")
-	v.SetDefault("ldap.port", 389)
-	v.SetDefault("ldap.auth_type", "directbind")
-	v.SetDefault("ldap.bind_dn", "")
-	v.SetDefault("ldap.bind_password", "")
-	v.SetDefault("ldap.user_search_filter", "(uid=%s)")
-	v.SetDefault("ldap.user_search_base", "ou=users,dc=example,dc=org")
-	v.SetDefault("ldap.user_dn_template", "uid=%s,ou=users,dc=example,dc=org")
-	v.SetDefault("ldap.tls_type", "none")
-	v.SetDefault("ldap.certificate_authority", "")
-	v.SetDefault("ldap.certificate", "")
-	v.SetDefault("ldap.key", "")
-	v.SetDefault("ldap.insecure", false)
-	*/
+
 
 	// inject defaults into LDAP configurations
 	for i, _ := range conf.Ldap {
@@ -401,10 +391,88 @@ func Load(dirname, consul_addr, consul_prefix, consul_token, consul_datacenter s
 }
 
 func ParseConfigFromConsul(vi *viper.Viper, prefix string, c map[string]string) {
+	c_prefix := prefix + "/conf"
+
 	for k, v := range c {
-		k = strings.Replace(strings.Trim(k[len(prefix):len(k)], "/"), "/", ".", -1)
-		log.Log.WithField(k, v).Debug("Config from consul")
-		vi.Set(k, v)
+		if strings.HasPrefix(k, c_prefix) {
+			k = strings.Replace(strings.Trim(k[len(c_prefix):len(k)], "/"), "/", ".", -1)
+			log.Log.WithField(k, v).Debug("Config from consul")
+			vi.Set(k, v)
+		}
 	}
+}
+
+func ParseLdapConfigFromConsul(conf *GlobalConfig, prefix string, c map[string]string) {
+	l_prefix := prefix + "/ldap"
+
+	ldap_configs := map[string]map[string]string{}
+
+	for k, v := range c {
+		if strings.HasPrefix(k, l_prefix) {
+			k = strings.Replace(strings.Trim(k[len(l_prefix):len(k)], "/"), "/", ".", -1)
+			splits := strings.SplitN(k, ".", 2)
+			bucket := splits[0]
+			k = splits[1]
+			if _, exists := ldap_configs[bucket]; !exists {
+				ldap_configs[bucket] = map[string]string{}
+			}
+			ldap_configs[bucket][k] = v
+		}
+	}
+	for _, m := range ldap_configs {
+		ldap_config := LdapConfig{}
+		for k, v := range m {
+			switch k {
+			case "host":
+				ldap_config.Host = v
+			case "port":
+				port, err := strconv.ParseInt(v, 10, 32)
+				if err == nil {
+					ldap_config.Port = uint32(port)
+				}
+			case "auth_type":
+				ldap_config.AuthType = v
+			case "bind_dn":
+				ldap_config.BindDn = v
+			case "bind_password":
+				ldap_config.BindPassword = v
+			case "user_search_filter":
+				ldap_config.UserSearchFilter = v
+			case "user_search_base":
+				ldap_config.UserSearchBase = v
+			case "user_dn_template":
+				ldap_config.UserDnTemplate = v
+			case "tls_type":
+				ldap_config.TlsType = v
+			case "certificate_authority":
+				ldap_config.CA = v
+			case "certificate":
+				ldap_config.Cert = v
+			case "key":
+				ldap_config.Key = v
+			case "insecure":
+				insecure, err := strconv.ParseBool(v)
+				if err == nil {
+					ldap_config.Insecure = insecure
+				}
+			}
+		}
+		conf.Ldap = append(conf.Ldap, ldap_config)
+	}
+	/*
+	v.SetDefault("ldap.host", "127.0.0.1")
+	v.SetDefault("ldap.port", 389)
+	v.SetDefault("ldap.auth_type", "directbind")
+	v.SetDefault("ldap.bind_dn", "")
+	v.SetDefault("ldap.bind_password", "")
+	v.SetDefault("ldap.user_search_filter", "(uid=%s)")
+	v.SetDefault("ldap.user_search_base", "ou=users,dc=example,dc=org")
+	v.SetDefault("ldap.user_dn_template", "uid=%s,ou=users,dc=example,dc=org")
+	v.SetDefault("ldap.tls_type", "none")
+	v.SetDefault("ldap.certificate_authority", "")
+	v.SetDefault("ldap.certificate", "")
+	v.SetDefault("ldap.key", "")
+	v.SetDefault("ldap.insecure", false)
+	*/
 }
 

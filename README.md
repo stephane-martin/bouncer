@@ -37,6 +37,16 @@ consul kv put -http-addr=127.0.0.1:8500 nginx-auth-ldap/conf/http/realm 'My Real
 nginx-auth-ldap serve --loglevel=debug --consul=http://127.0.0.1:8500
 ```
 
+The LDAP servers can be defined in Consul KV too:
+
+```
+consul kv put -http-addr=127.0.0.1:8500 nginx-auth-ldap/ldap/1/host 127.0.0.1
+consul kv put -http-addr=127.0.0.1:8500 nginx-auth-ldap/ldap/2/host 10.1.1.1
+consul kv put -http-addr=127.0.0.1:8500 nginx-auth-ldap/ldap/2/port 636
+consul kv put -http-addr=127.0.0.1:8500 nginx-auth-ldap/ldap/2/tls_type tls
+consul kv put -http-addr=127.0.0.1:8500 nginx-auth-ldap/ldap/2/insecure true
+```
+
 When `--consul` is provided, nginx-auth-ldap will watch for changes in Consul
 and restart if necessary.
 
