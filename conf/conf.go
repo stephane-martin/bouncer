@@ -18,6 +18,7 @@ import (
 
 type GlobalConfig struct {
 	Ldap  []LdapConfig `mapstructure:"ldap" toml:"ldap"`
+	DefaultLdap LdapConfig `mapstructure:"defaultldap" toml:"defaultldap"`
 	Http  HttpConfig   `mapstructure:"http" toml:"http"`
 	Api   ApiConfig    `mapstructure:"api" toml:"api"`
 	Cache CacheConfig  `mapstructure:"cache" toml:"cache"`
@@ -38,22 +39,6 @@ type LdapConfig struct {
 	Cert             string `mapstructure:"certificate" toml:"certificate"`
 	Key              string `mapstructure:"key" toml:"key"`
 	Insecure         bool   `mapstructure:"insecure" toml:"insecure"`
-}
-
-var DefaultLdapConfig LdapConfig = LdapConfig{
-	Host:             "127.0.0.1",
-	Port:             389,
-	AuthType:         "directbind",
-	BindDn:           "",
-	BindPassword:     "",
-	UserSearchFilter: "(uid=%s)",
-	UserSearchBase:   "ou=users,dc=example,dc=org",
-	UserDnTemplate:   "uid=%s,ou=users,dc=example,dc=org",
-	TlsType:          "none",
-	CA:               "",
-	Cert:             "",
-	Key:              "",
-	Insecure:         false,
 }
 
 type ApiConfig struct {
@@ -228,9 +213,23 @@ func Load(dirname, c_addr, c_prefix, c_token, c_dtctr string, consul_notify chan
 
 	}()
 
+
 	// we should close consul_notify in all cases
 	v := viper.New()
-	//v.SetDefault("ldap", []LdapConfig{DefaultLdapConfig})
+
+	v.SetDefault("defaultldap.host", "127.0.0.1")
+	v.SetDefault("defaultldap.port", 389)
+	v.SetDefault("defaultldap.auth_type", "directbind")
+	v.SetDefault("defaultldap.bind_dn", "")
+	v.SetDefault("defaultldap.bind_password", "")
+	v.SetDefault("defaultldap.user_search_filter", "(uid=%s)")
+	v.SetDefault("defaultldap.user_search_base", "ou=users,dc=example,dc=org")
+	v.SetDefault("defaultldap.user_dn_template", "uid=%s,ou=users,dc=example,dc=org")
+	v.SetDefault("defaultldap.tls_type", "none")
+	v.SetDefault("defaultldap.certificate_authority", "")
+	v.SetDefault("defaultldap.certificate", "")
+	v.SetDefault("defaultldap.key", "")
+	v.SetDefault("defaultldap.insecure", false)
 
 	v.SetDefault("http.bind_addr", "0.0.0.0")
 	v.SetDefault("http.port", 8080)
@@ -261,21 +260,19 @@ func Load(dirname, c_addr, c_prefix, c_token, c_dtctr string, consul_notify chan
 	v.SetDefault("redis.enabled", false)
 	v.SetDefault("redis.expires_seconds", 86400)
 
-	/*
-		v.BindEnv("ldap.host", "NAL_LDAP_HOST")
-		v.BindEnv("ldap.port", "NAL_LDAP_PORT")
-		v.BindEnv("ldap.auth_type", "NAL_AUTH_TYPE")
-		v.BindEnv("ldap.bind_dn", "NAL_BIND_DN")
-		v.BindEnv("ldap.bind_password", "NAL_BIND_PASSWORD")
-		v.BindEnv("ldap.user_search_filter", "NAL_SEARCH_FILTER")
-		v.BindEnv("ldap.user_search_base", "NAL_SEARCH_BASE")
-		v.BindEnv("ldap.user_dn_template", "NAL_USER_TEMPLATE")
-		v.BindEnv("ldap.tls_type", "NAL_LDAP_TLS")
-		v.BindEnv("ldap.certificate_authority", "NAL_LDAP_CA")
-		v.BindEnv("ldap.certificate", "NAL_LDAP_CERT")
-		v.BindEnv("ldap.key", "NAL_LDAP_KEY")
-		v.BindEnv("ldap.insecure", "NAL_LDAP_INSECURE")
-	*/
+	v.BindEnv("defaultldap.host", "NAL_LDAP_HOST")
+	v.BindEnv("defaultldap.port", "NAL_LDAP_PORT")
+	v.BindEnv("defaultldap.auth_type", "NAL_AUTH_TYPE")
+	v.BindEnv("defaultldap.bind_dn", "NAL_BIND_DN")
+	v.BindEnv("defaultldap.bind_password", "NAL_BIND_PASSWORD")
+	v.BindEnv("defaultldap.user_search_filter", "NAL_SEARCH_FILTER")
+	v.BindEnv("defaultldap.user_search_base", "NAL_SEARCH_BASE")
+	v.BindEnv("defaultldap.user_dn_template", "NAL_USER_TEMPLATE")
+	v.BindEnv("defaultldap.tls_type", "NAL_LDAP_TLS")
+	v.BindEnv("defaultldap.certificate_authority", "NAL_LDAP_CA")
+	v.BindEnv("defaultldap.certificate", "NAL_LDAP_CERT")
+	v.BindEnv("defaultldap.key", "NAL_LDAP_KEY")
+	v.BindEnv("defaultldap.insecure", "NAL_LDAP_INSECURE")
 
 	v.BindEnv("http.bind_addr", "NAL_HTTP_ADDR")
 	v.BindEnv("http.port", "NAL_HTTP_PORT")
@@ -373,25 +370,43 @@ func Load(dirname, c_addr, c_prefix, c_token, c_dtctr string, consul_notify chan
 	// inject defaults into LDAP configurations
 	for i, _ := range conf.Ldap {
 		if conf.Ldap[i].Host == "" {
-			conf.Ldap[i].Host = "127.0.0.1"
+			conf.Ldap[i].Host = conf.DefaultLdap.Host
 		}
 		if conf.Ldap[i].Port == 0 {
-			conf.Ldap[i].Port = 389
+			conf.Ldap[i].Port = conf.DefaultLdap.Port
 		}
 		if conf.Ldap[i].AuthType == "" {
-			conf.Ldap[i].AuthType = "directbind"
+			conf.Ldap[i].AuthType = conf.DefaultLdap.AuthType
+		}
+		if conf.Ldap[i].BindDn == "" {
+			conf.Ldap[i].BindDn = conf.DefaultLdap.BindDn
+		}
+		if conf.Ldap[i].BindPassword == "" {
+			conf.Ldap[i].BindPassword = conf.DefaultLdap.BindPassword
 		}
 		if conf.Ldap[i].UserSearchFilter == "" {
-			conf.Ldap[i].UserSearchFilter = "(uid=%s)"
+			conf.Ldap[i].UserSearchFilter = conf.DefaultLdap.UserSearchFilter
 		}
 		if conf.Ldap[i].UserSearchBase == "" {
-			conf.Ldap[i].UserSearchBase = "ou=users,dc=example,dc=org"
+			conf.Ldap[i].UserSearchBase = conf.DefaultLdap.UserSearchBase
 		}
 		if conf.Ldap[i].UserDnTemplate == "" {
-			conf.Ldap[i].UserDnTemplate = "uid=%s,ou=users,dc=example,dc=org"
+			conf.Ldap[i].UserDnTemplate = conf.DefaultLdap.UserDnTemplate
 		}
 		if conf.Ldap[i].TlsType == "" {
-			conf.Ldap[i].TlsType = "none"
+			conf.Ldap[i].TlsType = conf.DefaultLdap.TlsType
+		}
+		if conf.Ldap[i].CA == "" {
+			conf.Ldap[i].CA = conf.DefaultLdap.CA
+		}
+		if conf.Ldap[i].Cert == "" {
+			conf.Ldap[i].Cert = conf.DefaultLdap.Cert
+		}
+		if conf.Ldap[i].Key == "" {
+			conf.Ldap[i].Key = conf.DefaultLdap.Key
+		}
+		if !conf.Ldap[i].Insecure {
+			conf.Ldap[i].Insecure = conf.DefaultLdap.Insecure
 		}
 	}
 

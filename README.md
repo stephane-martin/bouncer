@@ -28,8 +28,8 @@ It is also possible to configure nginx-auth-ldap through environment variables.
 See [conf.go](https://github.com/stephane-martin/nginx-auth-ldap/blob/master/conf/conf.go)
 for the mappings.
 
-Consul KV can be used too. Put the parameters under `nginx-auth-ldap/conf`. For
-example:
+Consul KV can be used too. Put the parameters under `nginx-auth-ldap/conf/` prefix.
+For example:
 
 ```
 consul kv put -http-addr=127.0.0.1:8500 nginx-auth-ldap/conf/cache/expires_seconds 180
@@ -37,7 +37,7 @@ consul kv put -http-addr=127.0.0.1:8500 nginx-auth-ldap/conf/http/realm 'My Real
 nginx-auth-ldap serve --loglevel=debug --consul=http://127.0.0.1:8500
 ```
 
-The LDAP servers can be defined in Consul KV too:
+The actual LDAP servers can be defined in Consul KV too, under `ldap/[ID]/`:
 
 ```
 consul kv put -http-addr=127.0.0.1:8500 nginx-auth-ldap/ldap/1/host 127.0.0.1
@@ -47,9 +47,27 @@ consul kv put -http-addr=127.0.0.1:8500 nginx-auth-ldap/ldap/2/tls_type tls
 consul kv put -http-addr=127.0.0.1:8500 nginx-auth-ldap/ldap/2/insecure true
 ```
 
-When `--consul` is provided, nginx-auth-ldap will watch for changes in Consul
-and restart if necessary.
+The `defaultldap` configuration section (in configuration file or in Consul KV)
+can be used to define some generic LDAP parameters that will apply to all defined
+LDAP servers.
 
+```
+consul kv put -http-addr=127.0.0.1:8500 nginx-auth-ldap/conf/defaultldap/port 636
+consul kv put -http-addr=127.0.0.1:8500 nginx-auth-ldap/conf/defaultldap/tls_type tls
+```
+
+To check the resulting configuration, use the `print-config` command:
+
+```
+# Without consul
+nginx-auth-ldap print-config
+
+# With consul (merge configuration from file and Consul KV)
+nginx-auth-ldap --consul=http://127.0.0.1:8500
+```
+
+When Consul is used (`--consul` is provided on the command line), nginx-auth-ldap
+will watch for changes in Consul and restart itself if necessary.
 
 # Running
 
@@ -57,11 +75,18 @@ See `nginx-auth-ldap --help`.
 
 # Stopping
 
-Send SIGTERM or SIGINT to the process.
+Send SIGTERM or SIGINT to the `nginx-auth-ldap` process.
 
 # Reload configuration
 
-Send SIGHUP to the process.
+Send SIGHUP to the `nginx-auth-ldap` process.
+
+# Watch the flow of requests
+
+- `nginx-auth-ldap monitor` in the terminal
+- `http://127.0.0.1:8081/events` pushes the requests logs as server-side events
+
+Needs Redis.
 
 # Health check
 

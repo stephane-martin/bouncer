@@ -53,6 +53,11 @@ insecure = false # default 'false'
 # you can provide multiple LDAP configurations. The authentications will be
 # randomly balanced between them.
 
+[defaultldap]
+# Default parameters that apply to all LDAP servers
+port = 636
+insecure = true
+
 [api]
 # bind address for the API service
 bind_addr = "127.0.0.1"
