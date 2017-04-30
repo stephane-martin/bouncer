@@ -419,9 +419,10 @@ func ParseLdapConfigFromConsul(conf *GlobalConfig, prefix string, c map[string]s
 			ldap_configs[bucket][k] = v
 		}
 	}
-	for _, m := range ldap_configs {
+	for bucket, m := range ldap_configs {
 		ldap_config := LdapConfig{}
 		for k, v := range m {
+			log.Log.WithField("ldap_id", bucket).WithField(k, v).Debug("LDAP configuration from Consul")
 			switch k {
 			case "host":
 				ldap_config.Host = v
@@ -455,6 +456,7 @@ func ParseLdapConfigFromConsul(conf *GlobalConfig, prefix string, c map[string]s
 				if err == nil {
 					ldap_config.Insecure = insecure
 				}
+			default:
 			}
 		}
 		conf.Ldap = append(conf.Ldap, ldap_config)
