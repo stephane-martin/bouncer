@@ -17,12 +17,12 @@ import (
 )
 
 type GlobalConfig struct {
-	Ldap  []LdapConfig `mapstructure:"ldap" toml:"ldap"`
-	DefaultLdap LdapConfig `mapstructure:"defaultldap" toml:"defaultldap"`
-	Http  HttpConfig   `mapstructure:"http" toml:"http"`
-	Api   ApiConfig    `mapstructure:"api" toml:"api"`
-	Cache CacheConfig  `mapstructure:"cache" toml:"cache"`
-	Redis RedisConfig  `mapstructure:"redis" toml:"redis"`
+	Ldap        []LdapConfig `mapstructure:"ldap" toml:"ldap"`
+	DefaultLdap LdapConfig   `mapstructure:"defaultldap" toml:"defaultldap"`
+	Http        HttpConfig   `mapstructure:"http" toml:"http"`
+	Api         ApiConfig    `mapstructure:"api" toml:"api"`
+	Cache       CacheConfig  `mapstructure:"cache" toml:"cache"`
+	Redis       RedisConfig  `mapstructure:"redis" toml:"redis"`
 }
 
 type LdapConfig struct {
@@ -212,7 +212,6 @@ func Load(dirname, c_addr, c_prefix, c_token, c_dtctr string, consul_notify chan
 		}
 
 	}()
-
 
 	// we should close consul_notify in all cases
 	v := viper.New()
@@ -464,7 +463,7 @@ func ParseLdapConfigFromConsul(conf *GlobalConfig, prefix string, c map[string]s
 					ldap_config.Port = uint32(port)
 					log.Log.WithField("ldap_id", bucket).WithField(k, v).Debug("LDAP configuration from Consul")
 				} else {
-					log.Log.WithError(err).WithField(k, v).Warn("LDAP port in consul has wrong format. Ignoring")
+					log.Log.WithError(err).WithField(k, v).Warn("LDAP port in consul has wrong format. Ignoring.")
 				}
 			case "auth_type":
 				ldap_config.AuthType = v
@@ -502,7 +501,7 @@ func ParseLdapConfigFromConsul(conf *GlobalConfig, prefix string, c map[string]s
 					ldap_config.Insecure = insecure
 					log.Log.WithField("ldap_id", bucket).WithField(k, v).Debug("LDAP configuration from Consul")
 				} else {
-					log.Log.WithError(err).WithField(k, v).Warn("LDAP insecure parameter in consul has wrong format. Ignoring")
+					log.Log.WithError(err).WithField(k, v).Warn("LDAP insecure parameter in consul has wrong format. Ignoring.")
 				}
 			default:
 				log.Log.WithField(k, v).Warn("Ignoring LDAP parameter from Consul")
@@ -510,19 +509,4 @@ func ParseLdapConfigFromConsul(conf *GlobalConfig, prefix string, c map[string]s
 		}
 		conf.Ldap = append(conf.Ldap, ldap_config)
 	}
-	/*
-		v.SetDefault("ldap.host", "127.0.0.1")
-		v.SetDefault("ldap.port", 389)
-		v.SetDefault("ldap.auth_type", "directbind")
-		v.SetDefault("ldap.bind_dn", "")
-		v.SetDefault("ldap.bind_password", "")
-		v.SetDefault("ldap.user_search_filter", "(uid=%s)")
-		v.SetDefault("ldap.user_search_base", "ou=users,dc=example,dc=org")
-		v.SetDefault("ldap.user_dn_template", "uid=%s,ou=users,dc=example,dc=org")
-		v.SetDefault("ldap.tls_type", "none")
-		v.SetDefault("ldap.certificate_authority", "")
-		v.SetDefault("ldap.certificate", "")
-		v.SetDefault("ldap.key", "")
-		v.SetDefault("ldap.insecure", false)
-	*/
 }

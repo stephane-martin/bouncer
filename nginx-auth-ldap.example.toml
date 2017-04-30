@@ -1,3 +1,4 @@
+# Multiple LDAP servers can be defined in [[ldap]] sections
 [[ldap]]
 # LDAP directory host (default "127.0.0.1")
 host = "127.0.0.1"
@@ -54,7 +55,7 @@ insecure = false # default 'false'
 # randomly balanced between them.
 
 [defaultldap]
-# Default parameters that apply to all LDAP servers
+# Default parameters that would apply to all the defined LDAP servers
 port = 636
 insecure = true
 
