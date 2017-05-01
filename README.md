@@ -15,7 +15,7 @@ The dependencies are vendored.
 
 # Configuration
 
-See [the configuration example](https://github.com/stephane-martin/nginx-auth-ldap/blob/master/nginx-auth-ldap.example.toml).
+**See [the configuration example](https://github.com/stephane-martin/nginx-auth-ldap/blob/master/nginx-auth-ldap.example.toml)**.
 
 The configuration directory can be specified by a commandline flag
 `--config=XXX` (it defaults to `/etc`).
