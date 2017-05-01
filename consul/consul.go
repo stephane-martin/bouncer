@@ -18,6 +18,12 @@ func copy_map(m map[string]string) map[string]string {
 	return c
 }
 
+func sclose(c chan bool) {
+	if c != nil {
+		close(c)
+	}
+}
+
 func NewClient(addr, token, datacenter string) (*api.Client, error) {
 
 	config := *api.DefaultConfig()
@@ -92,25 +98,27 @@ func WatchServices(client *api.Client, service string, tag string, updates chan 
 }
 
 func WatchTree(client *api.Client, prefix string, notifications chan bool) (results map[string]string, stop chan bool, err error) {
-	// it is our job to close notify when we won't write anymore to it
+	// it is our job to close notifications when we won't write anymore to it
 	if client == nil || len(prefix) == 0 {
 		log.Log.Info("Not watching Consul for dynamic configuration")
-		if notifications != nil {
-			close(notifications)
-		}
+		sclose(notifications)
 		return nil, nil, nil
 	}
 	log.Log.WithField("prefix", prefix).Debug("Getting configuration from Consul")
 
 	var first_index uint64
 	results, first_index, err = getTree(client, prefix, 0)
+
 	if err != nil {
-		if notifications != nil {
-			close(notifications)
-		}
+		sclose(notifications)
 		return nil, nil, err
 	}
 
+	if notifications == nil {
+		return results, nil, nil
+	}
+
+	stop = make(chan bool, 1)
 	previous_index := first_index
 	previous_keyvalues := copy_map(results)
 
@@ -153,20 +161,18 @@ func WatchTree(client *api.Client, prefix string, notifications chan bool) (resu
 		}
 	}
 
-	if notifications != nil {
-		stop = make(chan bool, 1)
-		go func() {
-			defer close(notifications)
-			for {
-				select {
-				case <-stop:
-					return
-				default:
-					watch()
-				}
+	go func() {
+		defer close(notifications)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				watch()
 			}
-		}()
-	}
+		}
+	}()
+
 	return results, stop, nil
 
 }

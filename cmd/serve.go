@@ -125,7 +125,9 @@ func do_serve() bool {
 
 	if len(ConsulAddr) > 0 {
 		// read configuration from Consul and be notified of configuration updates
-		notify_updated_conf = make(chan bool, 100) // todo: size? // notify_updated_conf will be closed by conf.Load in all cases
+		notify_updated_conf = make(chan bool, 100) // todo: size?
+		// conf.Load is responsible to close notify_updated_conf in all cases
+		// we can use stop_chan to say that we are not interested in notifications anymore
 		config, stop_chan, err = conf.Load(ConfigDir, ConsulAddr, ConsulPrefix, ConsulToken, ConsulDatacenter, notify_updated_conf)
 	} else {
 		notify_updated_conf = make(chan bool, 1) // dummy, won't receive anything
@@ -139,6 +141,10 @@ func do_serve() bool {
 		return true
 	}
 
+	if stop_chan != nil {
+		defer close(stop_chan)
+	}
+
 	if len(ConsulAddr) > 0 && len(ConsulLdapServiceName) > 0 {
 		// discover LDAP servers through Consul health checks
 		discovery, err = conf.NewDiscoveryLdap(config, ConsulAddr, ConsulToken, ConsulLdapDatacenter, ConsulLdapTag, ConsulLdapServiceName)
@@ -149,11 +155,6 @@ func do_serve() bool {
 			discovery.Watch()
 			defer discovery.StopWatch()
 		}
-	}
-
-	// it is our job to close stop_chan when we are not interested in consul config updates anymore
-	if stop_chan != nil {
-		defer close(stop_chan)
 	}
 
 	mngr := stats.NewStatsManager(nil)

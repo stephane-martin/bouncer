@@ -11,9 +11,9 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/go-redis/redis"
+	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/errwrap"
 	"github.com/spf13/viper"
-	"github.com/hashicorp/consul/api"
 	"github.com/stephane-martin/nginx-auth-ldap/consul"
 	"github.com/stephane-martin/nginx-auth-ldap/log"
 )
@@ -194,32 +194,7 @@ func (c *GlobalConfig) Check() error {
 	return nil
 }
 
-
-// todo: simplify
-func Load(dirname, c_addr, c_prefix, c_token, c_dtctr string, consul_notify chan bool) (conf *GlobalConfig, stop_chan chan bool, err error) {
-	defer func() {
-		// sometimes viper panics
-		if r := recover(); r != nil {
-			log.Log.WithField("recover", r).Error("Recovered in conf.Load")
-			// find out exactly what the error was and set err
-			switch x := r.(type) {
-			case string:
-				err = errors.New(x)
-			case error:
-				err = x
-			default:
-				err = errors.New("Unknown panic")
-			}
-			// invalidate other returns
-			conf = nil
-			stop_chan = nil
-		}
-
-	}()
-
-	// we should close consul_notify in all cases
-	v := viper.New()
-
+func set_defaults(v *viper.Viper) {
 	v.SetDefault("defaultldap.host", "127.0.0.1")
 	v.SetDefault("defaultldap.port", 389)
 	v.SetDefault("defaultldap.auth_type", "directbind")
@@ -262,7 +237,9 @@ func Load(dirname, c_addr, c_prefix, c_token, c_dtctr string, consul_notify chan
 	v.SetDefault("redis.poolsize", 10)
 	v.SetDefault("redis.enabled", false)
 	v.SetDefault("redis.expires_seconds", 86400)
+}
 
+func set_environment_variables(v *viper.Viper) {
 	v.BindEnv("defaultldap.host", "NAL_LDAP_HOST")
 	v.BindEnv("defaultldap.port", "NAL_LDAP_PORT")
 	v.BindEnv("defaultldap.auth_type", "NAL_AUTH_TYPE")
@@ -305,7 +282,46 @@ func Load(dirname, c_addr, c_prefix, c_token, c_dtctr string, consul_notify chan
 	v.BindEnv("redis.poolsize", "NAL_REDIS_POOLSIZE")
 	v.BindEnv("redis.enabled", "NAL_REDIS_ENABLED")
 	v.BindEnv("redis.expires_seconds", "NAL_REDIS_EXPIRES")
+}
 
+func sclose(c chan bool) {
+	if c != nil {
+		close(c)
+	}
+}
+
+func Load(dirname, c_addr, c_prefix, c_token, c_dtctr string, notify_chan chan bool) (conf *GlobalConfig, stop_chan chan bool, err error) {
+
+	// - we must close notify_chan in all cases, when we don't plan to write anything more to it
+	// - if some error happens, the returned stop_chan must be nil
+	// - we enforce that behaviour for error cases in the first defer
+
+	defer func() {
+		// sometimes viper panics... let's catch that
+		if r := recover(); r != nil {
+			log.Log.WithField("recover", r).Error("Recovered in conf.Load")
+			// find out exactly what the error was and set err
+			switch x := r.(type) {
+			case string:
+				err = errors.New(x)
+			case error:
+				err = x
+			default:
+				err = errors.New("Unknown panic")
+			}
+		}
+		if err != nil {
+			sclose(stop_chan)
+			sclose(notify_chan)
+			stop_chan = nil
+			conf = nil
+		}
+	}()
+
+	// we must close notify_chan in all cases
+	v := viper.New()
+	set_defaults(v)
+	set_environment_variables(v)
 	v.SetConfigName("nginx-auth-ldap")
 
 	dirname = strings.TrimSpace(dirname)
@@ -320,50 +336,40 @@ func Load(dirname, c_addr, c_prefix, c_token, c_dtctr string, consul_notify chan
 	if err == nil {
 		log.Log.WithField("file", v.ConfigFileUsed()).Debug("Found configuration file")
 	} else {
-		switch err := err.(type) {
+		switch err.(type) {
 		default:
-			if consul_notify != nil {
-				close(consul_notify)
-			}
-			return nil, nil, errwrap.Wrapf("Error reading the configuration file", err)
+			err = errwrap.Wrapf("Error reading the configuration file", err)
+			return
 		case viper.ConfigFileNotFoundError:
 			log.Log.WithError(err).Debug("No configuration file was found")
 		}
 	}
 
 	var config_in_consul map[string]string
+	var client *api.Client
 
 	if len(c_addr) > 0 {
-		consul_client, err := consul.NewClient(c_addr, c_token, c_dtctr)
+		// consul is used for configuration
+		client, err = consul.NewClient(c_addr, c_token, c_dtctr)
 		if err != nil {
-			if consul_notify != nil {
-				close(consul_notify)
-			}
-			return nil, nil, err
+			return
 		}
-		if consul_notify == nil {
-			config_in_consul, _, err = consul.WatchTree(consul_client, c_prefix, nil)
-		} else {
-			// responsability to close consul_notify is transfered to WatchTree
-			config_in_consul, stop_chan, err = consul.WatchTree(consul_client, c_prefix, consul_notify)
-		}
+		// responsability to close notify_chan is transfered to WatchTree
+		config_in_consul, stop_chan, err = consul.WatchTree(client, c_prefix, notify_chan)
 		if err != nil {
-			return nil, nil, err
+			return
 		}
 		ParseConfigFromConsul(v, c_prefix, config_in_consul)
 	} else {
-		if consul_notify != nil {
-			close(consul_notify)
-		}
+		// consul is not used: we won't notify anything
+		sclose(notify_chan)
 	}
 
 	conf = New()
 	err = v.Unmarshal(conf)
 	if err != nil {
-		if stop_chan != nil {
-			close(stop_chan)
-		}
-		return nil, nil, errwrap.Wrapf("Error parsing configuration", err)
+		err = errwrap.Wrapf("Error parsing configuration", err)
+		return
 	}
 
 	if len(config_in_consul) > 0 {
@@ -373,15 +379,7 @@ func Load(dirname, c_addr, c_prefix, c_token, c_dtctr string, consul_notify chan
 	InjectDefaultLdapConfiguration(conf, &conf.Ldap)
 
 	err = conf.Check()
-	if err != nil {
-		if stop_chan != nil {
-			close(stop_chan)
-		}
-		return nil, nil, err
-	}
-
-	return conf, stop_chan, nil
-
+	return
 }
 
 func ParseConfigFromConsul(vi *viper.Viper, prefix string, c map[string]string) {
@@ -474,7 +472,6 @@ func ParseLdapConfigFromConsul(conf *GlobalConfig, prefix string, c map[string]s
 	}
 }
 
-
 func InjectDefaultLdapConfiguration(conf *GlobalConfig, ldap_servers *[]LdapConfig) {
 	// inject defaults into LDAP configurations
 	for i, _ := range *ldap_servers {
@@ -521,13 +518,13 @@ func InjectDefaultLdapConfiguration(conf *GlobalConfig, ldap_servers *[]LdapConf
 }
 
 type DiscoveryLdap struct {
-	conf *GlobalConfig
-	client *api.Client	
+	conf    *GlobalConfig
+	client  *api.Client
 	service string
-	tag string
-	mu *sync.RWMutex
+	tag     string
+	mu      *sync.RWMutex
 	servers []LdapConfig
-	stop chan bool
+	stop    chan bool
 	updates chan []consul.ServiceAddress
 }
 
@@ -537,13 +534,13 @@ func NewDiscoveryLdap(c *GlobalConfig, c_addr, c_token, c_dtctr, c_tag, c_servic
 		return nil, err
 	}
 	d := DiscoveryLdap{
-		conf: c,
-		client: client,
+		conf:    c,
+		client:  client,
 		service: c_service,
-		tag: c_tag,
-		mu: &sync.RWMutex{},
+		tag:     c_tag,
+		mu:      &sync.RWMutex{},
 		servers: []LdapConfig{},
-		stop: nil,
+		stop:    nil,
 		updates: nil,
 	}
 	return &d, nil
