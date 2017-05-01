@@ -2,6 +2,8 @@ package consul
 
 import (
 	"fmt"
+	"net"
+	"os"
 	"strings"
 	"time"
 
@@ -61,7 +63,7 @@ func WatchServices(client *api.Client, service string, tag string, updates chan 
 		if err != nil {
 			log.Log.WithError(err).Error("Error fetching services from Consul")
 			time.Sleep(time.Second)
-			return 0	
+			return 0
 		}
 		if meta.LastIndex != idx {
 			idx = meta.LastIndex
@@ -75,11 +77,11 @@ func WatchServices(client *api.Client, service string, tag string, updates chan 
 				services = append(services, ServiceAddress{Host: addr, Port: entry.Service.Port})
 				log.Log.WithField("host", addr).WithField("port", entry.Service.Port).Debug("Discovered LDAP")
 			}
-			updates <- services 
+			updates <- services
 		}
 		return idx
 	}
-	
+
 	stop = make(chan bool, 1)
 	go func() {
 		defer close(updates)
@@ -191,4 +193,110 @@ func getTree(client *api.Client, prefix string, waitIndex uint64) (map[string]st
 		results[strings.TrimSpace(string(v.Key))] = strings.TrimSpace(string(v.Value))
 	}
 	return results, meta.LastIndex, nil
+}
+
+
+type Registry struct {
+	client *api.Client
+}
+
+func NewRegistry(c_addr, c_token, c_dtctr string) (*Registry, error) {
+	c, err := NewClient(c_addr, c_token, c_dtctr)
+	if err != nil {
+		return nil, err
+	}
+	return &Registry{client: c}, nil
+}
+
+func (r *Registry) Register(name string, ip_s string, port int, check_url string, tags []string) (service_id string, err error) {
+
+	ip := net.ParseIP(ip_s)
+	if ip == nil {
+		ip, err = LocalIP()
+		if err != nil {
+			return "", err
+		}
+	}
+	if ip.IsLoopback() {
+		log.Log.WithField("name", name).Info("Skipping registration of service: it listens on loopback")
+		return "", nil
+	}
+	if ip.IsUnspecified() {
+		// todo: really ?
+		ip, err = LocalIP()
+		if err != nil {
+			return "", err
+		}
+	}
+	var hostname string
+	hostname, err = os.Hostname()
+	if err != nil {
+		return "", err
+	}
+
+	service_id = fmt.Sprintf("%s-%s-%d", name, hostname, port)
+
+	if len(check_url) == 0 {
+		check_url = fmt.Sprintf("http://[%s]:%d/health", ip, port)
+	}
+
+	service := &api.AgentServiceRegistration{
+		ID:      service_id,
+		Name:    name,
+		Address: ip.String(),
+		Port:    port,
+		Tags:    tags,
+		Check: &api.AgentServiceCheck{
+			HTTP:          check_url,
+			Interval:      "30s",
+			Timeout:       "2s",
+			TLSSkipVerify: true,
+		},
+	}
+
+	err = r.client.Agent().ServiceRegister(service)
+	if err != nil {
+		return "", err
+	}
+	log.Log.WithField("name", name).
+		WithField("id", service.ID).
+		WithField("ip", service.Address).
+		WithField("port", service.Port).
+		WithField("tags", strings.Join(service.Tags, ",")).
+		WithField("health_url", service.Check.HTTP).
+		Info("Registered service in Consul")
+	return service_id, nil
+}
+
+func (r *Registry) Registered(service_id string) (bool, error) {
+	services, err := r.client.Agent().Services()
+	if err != nil {
+		return false, err
+	}
+	return services[service_id] != nil, nil
+}
+
+func (r *Registry) Unregister(service_id string) error {
+	err := r.client.Agent().ServiceDeregister(service_id)
+	if err != nil {
+		log.Log.WithError(err).WithField("id", service_id).Error("Failed to unregister service")
+		return err
+	}
+	log.Log.WithField("id", service_id).Info("Unregistered service from Consul")
+	return nil
+}
+
+func LocalIP() (net.IP, error) {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil, err
+	}
+	for _, addr := range addrs {
+		if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.IsGlobalUnicast() {
+			if ipnet.IP.To4() != nil || ipnet.IP.To16() != nil {
+				return ipnet.IP, nil
+			}
+		}
+	}
+	return nil, nil
 }

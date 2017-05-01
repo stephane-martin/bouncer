@@ -131,7 +131,7 @@ func (s *StatsManager) Close() {
 	}
 }
 
-func (s *StatsManager) Store(e *model.Event) error {
+func (s *StatsManager) Store(e *model.RequestEvent) error {
 	if s.Client == nil {
 		return nil
 	}

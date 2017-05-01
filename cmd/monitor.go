@@ -80,7 +80,7 @@ func monitor() {
 		events := model.PackOfEvents{}
 		for _, cmd := range cmds {
 			for _, event_s := range cmd.Val() {
-				ev := model.Event{}
+				ev := model.RequestEvent{}
 				err := json.Unmarshal([]byte(event_s), &ev)
 				if err == nil {
 					events = append(events, &ev)
@@ -97,7 +97,7 @@ func monitor() {
 					fmt.Println(string(b))
 				}
 			} else {
-				fmt.Println(ev)	
+				fmt.Println(ev)
 			}
 		}
 	}
@@ -116,7 +116,7 @@ func monitor() {
 			restart = false
 		case msg, more := <-msg_chan:
 			if more {
-				ev := model.Event{}
+				ev := model.RequestEvent{}
 				err := json.Unmarshal([]byte(msg.Payload), &ev)
 				if err != nil {
 					log.Log.WithError(err).WithField("event", msg.Payload).Warn("Error decoding an event from Redis")

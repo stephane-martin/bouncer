@@ -26,6 +26,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/stephane-martin/nginx-auth-ldap/auth"
 	"github.com/stephane-martin/nginx-auth-ldap/conf"
+	"github.com/stephane-martin/nginx-auth-ldap/consul"
 	"github.com/stephane-martin/nginx-auth-ldap/janitor"
 	"github.com/stephane-martin/nginx-auth-ldap/log"
 	"github.com/stephane-martin/nginx-auth-ldap/model"
@@ -43,8 +44,19 @@ subrequests.`,
 	},
 }
 
+var register_in_consul bool
+var ui_service_name string
+var self_service_name string
+var ui_tags string
+var self_tags string
+
 func init() {
 	RootCmd.AddCommand(serveCmd)
+	serveCmd.Flags().BoolVar(&register_in_consul, "register", false, "Register nginx-auth-ldap services in Consul")
+	serveCmd.Flags().StringVar(&ui_service_name, "ui-service-name", "nginx-auth-ldap-ui", "The Consul service name to register for the UI")
+	serveCmd.Flags().StringVar(&self_service_name, "service-name", "nginx-auth-ldap-dev", "The Consul service name to register for the Auth service")
+	serveCmd.Flags().StringVar(&ui_tags, "ui-tags", "", "Comma-separated list of tags to set for the UI service")
+	serveCmd.Flags().StringVar(&self_tags, "tags", "", "Comma-separated list of tags to set for the Auth service")
 }
 
 func sighup() {
@@ -62,11 +74,13 @@ func serve() {
 	disable_colors := false
 
 	if Syslog || len(LogFilename) > 0 {
+		// plaintext for syslog
 		disable_timestamps = true
 		disable_colors = true
 	}
 
 	if Json {
+		// logs formatted as JSON
 		log.Log.Formatter = &logrus.JSONFormatter{DisableTimestamp: disable_timestamps}
 	} else {
 		log.Log.Formatter = &logrus.TextFormatter{DisableColors: disable_colors, DisableTimestamp: disable_timestamps, FullTimestamp: true}
@@ -76,6 +90,7 @@ func serve() {
 		hook, err := logrus_syslog.NewSyslogHook("", "", syslog.LOG_INFO, "")
 		if err == nil {
 			log.Log.Hooks.Add(hook)
+			// if we log to syslog, we don't log to stderr
 			f, err := os.OpenFile("/dev/null", os.O_WRONLY, 0600)
 			if err == nil {
 				log.Log.Out = f
@@ -87,6 +102,7 @@ func serve() {
 	}
 
 	if len(LogFilename) > 0 {
+		// write the logs to a file
 		f, err := os.OpenFile(LogFilename, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0660)
 		if err != nil {
 			log.Log.WithError(err).WithField("logfile", LogFilename).Fatal("Failed to open the log file")
@@ -96,6 +112,7 @@ func serve() {
 	}
 
 	if len(PidFilename) > 0 {
+		// write the current PID to a file
 		pidfile.SetPidfilePath(PidFilename)
 		err := pidfile.Write()
 		if err != nil {
@@ -130,6 +147,7 @@ func do_serve() bool {
 		// we can use stop_chan to say that we are not interested in notifications anymore
 		config, stop_chan, err = conf.Load(ConfigDir, ConsulAddr, ConsulPrefix, ConsulToken, ConsulDatacenter, notify_updated_conf)
 	} else {
+		// just read configuration from file and environment
 		notify_updated_conf = make(chan bool, 1) // dummy, won't receive anything
 		defer close(notify_updated_conf)
 		config, _, err = conf.Load(ConfigDir, "", "", "", "", nil)
@@ -157,6 +175,7 @@ func do_serve() bool {
 		}
 	}
 
+	// statistics manager. Initialized with a nil redis client, it will do nothing.
 	mngr := stats.NewStatsManager(nil)
 	defer mngr.Close()
 
@@ -168,6 +187,7 @@ func do_serve() bool {
 		} else {
 			mngr.Client = config.GetRedisClient()
 			if config.Redis.Expires > 0 {
+				// the janitor removes old records from redis
 				j := janitor.NewJanitor(config, mngr.Client)
 				j.Start()
 				defer j.Stop()
@@ -175,6 +195,7 @@ func do_serve() bool {
 		}
 	}
 
+	// initialize (Redis stored) counters
 	for i, _ := range model.CounterNames {
 		mngr.RegCounter(i)
 	}
@@ -198,6 +219,7 @@ func do_serve() bool {
 	defer cancel_api_ctx()
 	var cancel_ctx context.CancelFunc
 	if config.Http.ShutdownTimeout > 0 {
+		// we set a timeout to stop the Auth service
 		ctx, cancel_ctx = context.WithTimeout(context.Background(), time.Duration(config.Http.ShutdownTimeout)*time.Second)
 		defer cancel_ctx()
 	}
@@ -205,10 +227,33 @@ func do_serve() bool {
 	server, done := StartHttp(config, discovery, mngr)
 	api, api_done := StartApi(config, discovery, mngr)
 
+	if register_in_consul && len(ConsulAddr) > 0 {
+		// register the API service and the Auth service in Consul
+		tag_list := strings.Split(self_tags, ",")
+		ui_tag_list := strings.Split(ui_tags, ",")
+		registry, err := consul.NewRegistry(ConsulAddr, ConsulToken, ConsulDatacenter)
+		if err != nil {
+			log.Log.WithError(err).Error("Failed to build the Consul registry")
+		} else {
+			ui_service_id, err := registry.Register(ui_service_name, config.Api.BindAddr, int(config.Api.Port), "", ui_tag_list)
+			if err != nil {
+				log.Log.WithError(err).Error("Failed to register the UI")
+			} else {
+				defer registry.Unregister(ui_service_id)
+			}
+			self_service_id, err := registry.Register(self_service_name, config.Http.BindAddr, int(config.Http.Port), "", tag_list)
+			if err != nil {
+				log.Log.WithError(err).Error("Failed to register the auth service")
+			} else {
+				defer registry.Unregister(self_service_id)
+			}
+		}
+	}
+
 	select {
-	// wait for either a signal, or that the HTTP server stops
+	// wait for a signal, for the termination of the HTTP servers, or for a modified configuration notification
 	case <-done:
-		// stop signal handlers
+		// the Auth service has stopped
 		signal.Stop(sig_chan)
 		close(sig_chan)
 		log.Log.Error("Abrupt termination of the HTTP server. Sleeping a while and restarting.")
@@ -219,6 +264,7 @@ func do_serve() bool {
 		return true
 
 	case <-api_done:
+		// the API service has stopped
 		signal.Stop(sig_chan)
 		close(sig_chan)
 		log.Log.Error("Abrupt termination of the API server. Sleeping a while and restarting.")
@@ -229,6 +275,7 @@ func do_serve() bool {
 		return true
 
 	case <-notify_updated_conf:
+		// consul notifies a change of configuration
 		signal.Stop(sig_chan)
 		close(sig_chan)
 		log.Log.Info("New configuration was notified by Consul: restarting")
@@ -239,7 +286,7 @@ func do_serve() bool {
 		return true
 
 	case sig := <-sig_chan:
-		// stop signal handlers... in all cases
+		// we received a signal
 		signal.Stop(sig_chan)
 		close(sig_chan)
 
@@ -279,7 +326,7 @@ func do_serve() bool {
 	}
 }
 
-func EventFromRequest(r *http.Request, config *conf.GlobalConfig) (e *model.Event) {
+func EventFromRequest(r *http.Request, config *conf.GlobalConfig) (e *model.RequestEvent) {
 	e = model.NewEmptyEvent()
 	e.Username = strings.TrimSpace(r.FormValue("username"))
 	e.Password = strings.TrimSpace(r.FormValue("password"))
@@ -301,11 +348,6 @@ func EventFromRequest(r *http.Request, config *conf.GlobalConfig) (e *model.Even
 		e.Port = parsed_uri.Port()
 		e.Uri = parsed_uri.RequestURI()
 		e.Proto = parsed_uri.Scheme
-	} else {
-		e.Host = ""
-		e.Uri = ""
-		e.Port = ""
-		e.Proto = ""
 	}
 
 	if len(e.Username) == 0 || len(e.Password) == 0 {
@@ -318,7 +360,7 @@ func EventFromRequest(r *http.Request, config *conf.GlobalConfig) (e *model.Even
 	return e
 }
 
-func EventFromSubRequest(r *http.Request, config *conf.GlobalConfig) (e *model.Event) {
+func EventFromSubRequest(r *http.Request, config *conf.GlobalConfig) (e *model.RequestEvent) {
 	e = model.NewEmptyEvent()
 	authorization := strings.TrimSpace(r.Header.Get(config.Http.AuthorizationHeader))
 	e.Host = strings.TrimSpace(r.Header.Get(config.Http.OriginalHostHeader))
@@ -396,7 +438,7 @@ func StartApi(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *st
 		return
 	}
 
-	check_handler := func(w http.ResponseWriter, r *http.Request) {
+	health_handler := func(w http.ResponseWriter, r *http.Request) {
 		err := auth.CheckLdapConn(config, discovery)
 		if err != nil {
 			// we have a connection problem to LDAP...
@@ -495,7 +537,7 @@ func StartApi(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *st
 
 	mux.HandleFunc("/status", status_handler)
 	mux.HandleFunc("/conf", config_handler)
-	mux.HandleFunc("/check", check_handler)
+	mux.HandleFunc("/health", health_handler)
 	mux.HandleFunc("/reload", reload_handler)
 
 	if config.Redis.Enabled {
@@ -533,7 +575,7 @@ func StartHttp(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *s
 	var secret []byte
 	var err error
 	var auth_cache *cache.Cache
-	event_chan := make(chan *model.Event, 100)
+	request_event_chan := make(chan *model.RequestEvent, 100)
 
 	if config.Cache.Expires > 0 {
 		expires := time.Duration(config.Cache.Expires) * time.Second
@@ -545,7 +587,7 @@ func StartHttp(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *s
 		}
 	}
 
-	event_handler := func(w http.ResponseWriter, ev *model.Event) {
+	_request_event_handler := func(w http.ResponseWriter, ev *model.RequestEvent) {
 		var hmac_b []byte
 
 		// make sure we post an answer
@@ -553,9 +595,21 @@ func StartHttp(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *s
 			if ev.RetCode == 401 {
 				w.Header().Add(config.Http.AuthenticateHeader, fmt.Sprintf("Basic realm=\"%s\"", config.Http.Realm))
 			}
-			w.WriteHeader(ev.RetCode)
 			// perform post-processing in a separate goroutine
-			event_chan <- ev
+			request_event_chan <- ev
+			if ev.RetCode == 403 && config.Http.FailedAuthDelay > 0 {
+				// in auth context it is good practice to add a bit of random to counter time based attacks
+				n, err := rand.Int(rand.Reader, big.NewInt(1000))
+				if err != nil {
+					log.Log.WithError(err).Error("Error generating random number. Check your rand source.")
+				} else {
+					// sleep for some random time < 1s
+					time.Sleep(time.Duration(n.Int64()) * time.Millisecond)
+				}
+				// sleep (fixed time)
+				time.Sleep(time.Duration(config.Http.FailedAuthDelay) * time.Second)
+			}
+			w.WriteHeader(ev.RetCode)
 		}()
 
 		if ev.RetCode != 0 {
@@ -599,16 +653,6 @@ func StartHttp(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *s
 			ev.Message = fmt.Sprintf("Auth failed: %s", err.Error())
 			ev.Result = model.FAIL_AUTH
 			ev.RetCode = 403
-			if config.Http.FailedAuthDelay > 0 {
-				// in auth context it is good practice to add a bit of random to counter time based attacks
-				n, err := rand.Int(rand.Reader, big.NewInt(1000))
-				if err != nil {
-					log.Log.WithError(err).Error("Error generating random number. Check your rand source.")
-				} else {
-					time.Sleep(time.Duration(n.Int64()) * time.Millisecond)
-				}
-				time.Sleep(time.Duration(config.Http.FailedAuthDelay) * time.Second)
-			}
 			return
 		}
 
@@ -626,20 +670,36 @@ func StartHttp(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *s
 
 	nginx_subrequest_handler := func(w http.ResponseWriter, r *http.Request) {
 		ev := EventFromSubRequest(r, config)
-		event_handler(w, ev)
+		_request_event_handler(w, ev)
 	}
 
-	direct_auth_handler := func (w http.ResponseWriter, r *http.Request) {
+	direct_auth_handler := func(w http.ResponseWriter, r *http.Request) {
 		ev := EventFromRequest(r, config)
-		event_handler(w, ev)
+		_request_event_handler(w, ev)
+	}
+
+	health_handler := func(w http.ResponseWriter, r *http.Request) {
+		err := auth.CheckLdapConn(config, discovery)
+		if err != nil {
+			// we have a connection problem to LDAP...
+			log.Log.WithError(err).Error("Check LDAP connection failed")
+			// first reply that the health check is negative
+			w.WriteHeader(500)
+			// then send signal to myself to stop the HTTP server
+			sigusr()
+		} else {
+			// we're alive
+			w.WriteHeader(200)
+		}
 	}
 
 	mux.HandleFunc("/nginx", nginx_subrequest_handler)
 	mux.HandleFunc("/auth", direct_auth_handler)
+	mux.HandleFunc("/health", health_handler)
 
 	go func() {
-		// postprocessing events
-		for ev := range event_chan {
+		// postprocessing request events: log the request, archive it in redis, restart server if operational error
+		for ev := range request_event_chan {
 			// log the event
 			l := log.Log.WithField("username", ev.Username).WithField("uri", ev.Uri).WithField("retcode", ev.RetCode).WithField("result", ev.Result)
 			if ev.RetCode == 200 {
@@ -650,11 +710,9 @@ func StartHttp(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *s
 				l.Info(ev.Message)
 			}
 			// write it to Redis
-			if config.Redis.Enabled {
-				err := mngr.Store(ev)
-				if err != nil {
-					log.Log.WithError(err).Error("Error happened when storing a request in Redis")
-				}
+			err := mngr.Store(ev)
+			if err != nil {
+				log.Log.WithError(err).Error("Error happened when storing a request in Redis")
 			}
 			// restart and wait if there was an operational error
 			if ev.RetCode == 500 {
@@ -673,7 +731,7 @@ func StartHttp(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *s
 			err = server.ListenAndServe()
 		}
 
-		close(event_chan)
+		close(request_event_chan)
 		close(done)
 
 		if err != nil {

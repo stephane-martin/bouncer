@@ -42,7 +42,7 @@ const (
 
 var ResultTypes []Result = []Result{SUCCESS_AUTH, SUCCESS_AUTH_CACHE, FAIL_AUTH, INVALID_REQUEST, OP_ERROR, NO_AUTH}
 
-type Event struct {
+type RequestEvent struct {
 	Username  string `json:"username"`
 	Password  string `json:"-"`
 	Host      string `json:"host"`
@@ -68,11 +68,11 @@ Result: %d
 Message: %s
 `
 
-func (e *Event) String() string {
+func (e *RequestEvent) String() string {
 	return fmt.Sprintf(EventStringFormat, e.Timestamp, e.Proto, e.Host, e.Port, e.Uri, e.ClientIP, e.Username, e.RetCode, e.Result, e.Message)
 }
 
-type PackOfEvents []*Event
+type PackOfEvents []*RequestEvent
 
 func (p PackOfEvents) Len() int {
 	return len(p)
@@ -84,11 +84,11 @@ func (p PackOfEvents) Less(i, j int) bool {
 	return p[i].Timestamp < p[j].Timestamp
 }
 
-func NewEmptyEvent() *Event {
-	return &Event{Timestamp: time.Now().UnixNano()}
+func NewEmptyEvent() *RequestEvent {
+	return &RequestEvent{Timestamp: time.Now().UnixNano()}
 }
 
-func (e *Event) Hmac(secret []byte) []byte {
+func (e *RequestEvent) Hmac(secret []byte) []byte {
 	mac := hmac.New(sha256.New, secret)
 	mac.Write([]byte(e.Username))
 	mac.Write([]byte(":"))

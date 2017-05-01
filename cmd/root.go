@@ -50,8 +50,8 @@ func init() {
 	RootCmd.PersistentFlags().StringVar(&ConsulPrefix, "prefix", "nginx-auth-ldap", "nginx-auth-ldap prefix in Consul KV")
 	RootCmd.PersistentFlags().StringVar(&ConsulToken, "token", "", "Consul token")
 	RootCmd.PersistentFlags().StringVar(&ConsulDatacenter, "datacenter", "", "Consul datacenter that stores nginx-auth-ldap configuration")
-	RootCmd.PersistentFlags().StringVar(&ConsulLdapDatacenter, "ldapdatacenter", "", "Consul datacenter that hosts the LDAP servers")
-	RootCmd.PersistentFlags().StringVar(&ConsulLdapServiceName, "service", "", "Consul LDAP service name")
+	RootCmd.PersistentFlags().StringVar(&ConsulLdapDatacenter, "ldap-datacenter", "", "Consul datacenter that hosts the LDAP servers")
+	RootCmd.PersistentFlags().StringVar(&ConsulLdapServiceName, "ldap-service-name", "", "Consul LDAP service name to discover")
 	RootCmd.PersistentFlags().StringVar(&ConsulLdapTag, "tag", "", "Consul LDAP service filter tag")
 }
 
