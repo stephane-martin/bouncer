@@ -36,11 +36,32 @@ func (e *LdapAuthError) Error() string {
 	return e.Err.Error()
 }
 
-func Authenticate(username string, password string, c *conf.GlobalConfig) error {
+type NoLdapServer struct {}
+
+func (e *NoLdapServer) Error() string {
+	return "No LDAP server is available"
+}
+
+func Authenticate(username string, password string, c *conf.GlobalConfig, discovery *conf.DiscoveryLdap) error {
 	var err error
 	// try each LDAP configuration in a random order until we get a response
-	for _, i := range rand.Perm(len(c.Ldap)) {
-		l := c.Ldap[i]
+	ldap_servers := []conf.LdapConfig{}
+	// statically configured LDAP servers
+	for _, server := range c.Ldap {
+		ldap_servers = append(ldap_servers, server)
+	}
+	if discovery != nil {
+		// discovered LDAP servers
+		for _, server := range discovery.Get() {
+			ldap_servers = append(ldap_servers, server)
+		}
+	}
+	if len(ldap_servers) == 0 {
+		return &NoLdapServer{}	
+	}
+	for _, i := range rand.Perm(len(ldap_servers)) {
+		l := ldap_servers[i]
+		log.Log.WithField("host", l.Host).WithField("port", l.Port).Debug("Trying LDAP server")
 		if l.AuthType == "directbind" {
 			err = DirectBind(username, password, &l)
 		} else if l.AuthType == "search" {
@@ -98,13 +119,30 @@ func GetLdapClient(l *conf.LdapConfig) (conn *ldap.Conn, err error) {
 	return conn, nil
 }
 
-func CheckLdapConn(c *conf.GlobalConfig) error {
+func CheckLdapConn(c *conf.GlobalConfig, discovery *conf.DiscoveryLdap) error {
 	// check that we can connect to at least one LDAP server
 	var err error
-	for _, l := range c.Ldap {
+	ldap_servers := []conf.LdapConfig{}
+	for _, server := range c.Ldap {
+		ldap_servers = append(ldap_servers, server)
+	}
+	if discovery != nil {
+		// discovered LDAP servers
+		for _, server := range discovery.Get() {
+			ldap_servers = append(ldap_servers, server)
+		}
+	}
+	if len(ldap_servers) == 0 {
+		return &NoLdapServer{}	
+	}
+	
+	for _, l := range ldap_servers {
 		err = CheckOneLdapConn(&l)
 		if err == nil {
+			log.Log.WithField("host", l.Host).WithField("port", l.Port).Debug("CheckLdapConn success")
 			return nil
+		} else {
+			log.Log.WithError(err).WithField("host", l.Host).WithField("port", l.Port).Warn("CheckLdapConn failed")
 		}
 	}
 	// return last error

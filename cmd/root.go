@@ -19,6 +19,9 @@ var ConsulAddr string
 var ConsulPrefix string
 var ConsulToken string
 var ConsulDatacenter string
+var ConsulLdapDatacenter string
+var ConsulLdapServiceName string
+var ConsulLdapTag string
 
 var RootCmd = &cobra.Command{
 	Use:   "nginx-auth-ldap",
@@ -46,7 +49,10 @@ func init() {
 	RootCmd.PersistentFlags().StringVar(&ConsulAddr, "consul", "", "Consul scheme, host and port (eg http://A.B.C.D:PORT)")
 	RootCmd.PersistentFlags().StringVar(&ConsulPrefix, "prefix", "nginx-auth-ldap", "nginx-auth-ldap prefix in Consul KV")
 	RootCmd.PersistentFlags().StringVar(&ConsulToken, "token", "", "Consul token")
-	RootCmd.PersistentFlags().StringVar(&ConsulDatacenter, "datacenter", "", "Consul datacenter to query (leave empty for default)")
+	RootCmd.PersistentFlags().StringVar(&ConsulDatacenter, "datacenter", "", "Consul datacenter that stores nginx-auth-ldap configuration")
+	RootCmd.PersistentFlags().StringVar(&ConsulLdapDatacenter, "ldapdatacenter", "", "Consul datacenter that hosts the LDAP servers")
+	RootCmd.PersistentFlags().StringVar(&ConsulLdapServiceName, "service", "", "Consul LDAP service name")
+	RootCmd.PersistentFlags().StringVar(&ConsulLdapTag, "tag", "", "Consul LDAP service filter tag")
 }
 
 func init_logging() {

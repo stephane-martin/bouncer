@@ -37,7 +37,20 @@ works for a single username and password.`,
 			os.Exit(-1)
 		}
 
-		err = auth.Authenticate(username, password, config)
+		var discovery *conf.DiscoveryLdap
+		if len(ConsulAddr) > 0 && len(ConsulLdapServiceName) > 0 {
+			// discover LDAP servers through Consul health checks
+			discovery, err = conf.NewDiscoveryLdap(config, ConsulAddr, ConsulToken, ConsulLdapDatacenter, ConsulLdapTag, ConsulLdapServiceName)
+			if err != nil {
+				log.Log.WithError(err).Error("Error initializing LDAP discovery. Discovery is disabled.")
+				discovery = nil
+			} else {
+				discovery.Watch()
+				defer discovery.StopWatch()
+			}
+		}
+
+		err = auth.Authenticate(username, password, config, discovery)
 		if err != nil {
 			log.Log.WithError(err).Error("Authentication failed")
 			os.Exit(-1)

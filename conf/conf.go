@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/BurntSushi/toml"
 	"github.com/go-redis/redis"
 	"github.com/hashicorp/errwrap"
 	"github.com/spf13/viper"
+	"github.com/hashicorp/consul/api"
 	"github.com/stephane-martin/nginx-auth-ldap/consul"
 	"github.com/stephane-martin/nginx-auth-ldap/log"
 )
@@ -366,48 +368,7 @@ func Load(dirname, c_addr, c_prefix, c_token, c_dtctr string, consul_notify chan
 		ParseLdapConfigFromConsul(conf, c_prefix, config_in_consul)
 	}
 
-	// inject defaults into LDAP configurations
-	for i, _ := range conf.Ldap {
-		if conf.Ldap[i].Host == "" {
-			conf.Ldap[i].Host = conf.DefaultLdap.Host
-		}
-		if conf.Ldap[i].Port == 0 {
-			conf.Ldap[i].Port = conf.DefaultLdap.Port
-		}
-		if conf.Ldap[i].AuthType == "" {
-			conf.Ldap[i].AuthType = conf.DefaultLdap.AuthType
-		}
-		if conf.Ldap[i].BindDn == "" {
-			conf.Ldap[i].BindDn = conf.DefaultLdap.BindDn
-		}
-		if conf.Ldap[i].BindPassword == "" {
-			conf.Ldap[i].BindPassword = conf.DefaultLdap.BindPassword
-		}
-		if conf.Ldap[i].UserSearchFilter == "" {
-			conf.Ldap[i].UserSearchFilter = conf.DefaultLdap.UserSearchFilter
-		}
-		if conf.Ldap[i].UserSearchBase == "" {
-			conf.Ldap[i].UserSearchBase = conf.DefaultLdap.UserSearchBase
-		}
-		if conf.Ldap[i].UserDnTemplate == "" {
-			conf.Ldap[i].UserDnTemplate = conf.DefaultLdap.UserDnTemplate
-		}
-		if conf.Ldap[i].TlsType == "" {
-			conf.Ldap[i].TlsType = conf.DefaultLdap.TlsType
-		}
-		if conf.Ldap[i].CA == "" {
-			conf.Ldap[i].CA = conf.DefaultLdap.CA
-		}
-		if conf.Ldap[i].Cert == "" {
-			conf.Ldap[i].Cert = conf.DefaultLdap.Cert
-		}
-		if conf.Ldap[i].Key == "" {
-			conf.Ldap[i].Key = conf.DefaultLdap.Key
-		}
-		if !conf.Ldap[i].Insecure {
-			conf.Ldap[i].Insecure = conf.DefaultLdap.Insecure
-		}
-	}
+	InjectDefaultLdapConfiguration(conf, &conf.Ldap)
 
 	err = conf.Check()
 	if err != nil {
@@ -509,4 +470,124 @@ func ParseLdapConfigFromConsul(conf *GlobalConfig, prefix string, c map[string]s
 		}
 		conf.Ldap = append(conf.Ldap, ldap_config)
 	}
+}
+
+
+func InjectDefaultLdapConfiguration(conf *GlobalConfig, ldap_servers *[]LdapConfig) {
+	// inject defaults into LDAP configurations
+	for i, _ := range *ldap_servers {
+		if (*ldap_servers)[i].Host == "" {
+			(*ldap_servers)[i].Host = conf.DefaultLdap.Host
+		}
+		if (*ldap_servers)[i].Port == 0 {
+			(*ldap_servers)[i].Port = conf.DefaultLdap.Port
+		}
+		if (*ldap_servers)[i].AuthType == "" {
+			(*ldap_servers)[i].AuthType = conf.DefaultLdap.AuthType
+		}
+		if (*ldap_servers)[i].BindDn == "" {
+			(*ldap_servers)[i].BindDn = conf.DefaultLdap.BindDn
+		}
+		if (*ldap_servers)[i].BindPassword == "" {
+			(*ldap_servers)[i].BindPassword = conf.DefaultLdap.BindPassword
+		}
+		if (*ldap_servers)[i].UserSearchFilter == "" {
+			(*ldap_servers)[i].UserSearchFilter = conf.DefaultLdap.UserSearchFilter
+		}
+		if (*ldap_servers)[i].UserSearchBase == "" {
+			(*ldap_servers)[i].UserSearchBase = conf.DefaultLdap.UserSearchBase
+		}
+		if (*ldap_servers)[i].UserDnTemplate == "" {
+			(*ldap_servers)[i].UserDnTemplate = conf.DefaultLdap.UserDnTemplate
+		}
+		if (*ldap_servers)[i].TlsType == "" {
+			(*ldap_servers)[i].TlsType = conf.DefaultLdap.TlsType
+		}
+		if (*ldap_servers)[i].CA == "" {
+			(*ldap_servers)[i].CA = conf.DefaultLdap.CA
+		}
+		if (*ldap_servers)[i].Cert == "" {
+			(*ldap_servers)[i].Cert = conf.DefaultLdap.Cert
+		}
+		if (*ldap_servers)[i].Key == "" {
+			(*ldap_servers)[i].Key = conf.DefaultLdap.Key
+		}
+		if !(*ldap_servers)[i].Insecure {
+			(*ldap_servers)[i].Insecure = conf.DefaultLdap.Insecure
+		}
+	}
+}
+
+type DiscoveryLdap struct {
+	conf *GlobalConfig
+	client *api.Client	
+	service string
+	tag string
+	mu *sync.RWMutex
+	servers []LdapConfig
+	stop chan bool
+	updates chan []consul.ServiceAddress
+}
+
+func NewDiscoveryLdap(c *GlobalConfig, c_addr, c_token, c_dtctr, c_tag, c_service string) (*DiscoveryLdap, error) {
+	client, err := consul.NewClient(c_addr, c_token, c_dtctr)
+	if err != nil {
+		return nil, err
+	}
+	d := DiscoveryLdap{
+		conf: c,
+		client: client,
+		service: c_service,
+		tag: c_tag,
+		mu: &sync.RWMutex{},
+		servers: []LdapConfig{},
+		stop: nil,
+		updates: nil,
+	}
+	return &d, nil
+}
+
+func (d *DiscoveryLdap) Watch() {
+	d.updates = make(chan []consul.ServiceAddress, 100)
+	d.stop = consul.WatchServices(d.client, d.service, d.tag, d.updates)
+	wait_first := make(chan bool, 1)
+	go func() {
+		for {
+			servers := []LdapConfig{}
+			updates, more := <-d.updates
+			close(wait_first)
+			if !more {
+				return
+			}
+			for _, update := range updates {
+				server := LdapConfig{Host: update.Host, Port: uint32(update.Port)}
+				servers = append(servers, server)
+			}
+			if len(servers) == 0 {
+				log.Log.Warn("No LDAP server was discovered.")
+			} else {
+				InjectDefaultLdapConfiguration(d.conf, &servers)
+				d.mu.Lock()
+				d.servers = servers
+				d.mu.Unlock()
+			}
+		}
+	}()
+	<-wait_first
+}
+
+func (d *DiscoveryLdap) StopWatch() {
+	if d.stop != nil {
+		close(d.stop)
+	}
+}
+
+func (d *DiscoveryLdap) Get() []LdapConfig {
+	servers := []LdapConfig{}
+	d.mu.RLock()
+	for _, server := range d.servers {
+		servers = append(servers, LdapConfig(server))
+	}
+	d.mu.RUnlock()
+	return servers
 }

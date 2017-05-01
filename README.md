@@ -56,7 +56,27 @@ consul kv put -http-addr=127.0.0.1:8500 nginx-auth-ldap/conf/defaultldap/port 63
 consul kv put -http-addr=127.0.0.1:8500 nginx-auth-ldap/conf/defaultldap/tls_type tls
 ```
 
-To check the resulting configuration, use the `print-config` command:
+Moreover, if your LDAP servers are registered in Consul as health checks, you
+don't need to (statically) define the LDAP servers in nginx-auth-ldap
+configuration. Instead, just tell nginx-auth-ldap where to find the LDAP
+services:
+
+```
+nginx-auth-ldap serve --consul=http://127.0.0.1:8500 --service slapd --ldapdatacenter ldapdc
+```
+
+This means: look for a service called `slapd`, that's defined in the `mail`
+Consul datacenter. The `slapd` hosts and ports, discovered in Consul, completed by
+`defaultldap` parameters, will be used as LDAP servers to perform the 
+authentication.
+
+To print the currently discovered and visible LDAP servers from Consul:
+
+```
+nginx-auth-ldap discovered --consul=http://127.0.0.1:8500 --service slapd --ldapdatacenter ldapdc
+```
+
+Finally, to check nginx-auth-ldap configuration, use the `print-config` command:
 
 ```
 # Without consul

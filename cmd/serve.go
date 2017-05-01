@@ -51,6 +51,11 @@ func sighup() {
 	p.Signal(syscall.SIGHUP)
 }
 
+func sigusr() {
+	p, _ := os.FindProcess(os.Getpid())
+	p.Signal(syscall.SIGUSR1)
+}
+
 func serve() {
 	disable_timestamps := false
 	disable_colors := false
@@ -100,8 +105,9 @@ func serve() {
 		}()
 	}
 
-	// prevent SIGHUP to stop the program in all cases
+	// prevent SIGHUP and SIGURS1 to stop the program in all cases
 	signal.Ignore(syscall.SIGHUP)
+	signal.Ignore(syscall.SIGUSR1)
 
 	restart := true
 	for restart {
@@ -113,10 +119,12 @@ func do_serve() bool {
 	var notify_updated_conf chan bool
 	var stop_chan chan bool
 	var err error
-	var config *conf.GlobalConfig 
+	var config *conf.GlobalConfig
+	var discovery *conf.DiscoveryLdap
 
 	if len(ConsulAddr) > 0 {
-		notify_updated_conf = make(chan bool, 100)	// todo: size? // notify_updated_conf will be closed by conf.Load in all cases
+		// read configuration from Consul and be notified of configuration updates
+		notify_updated_conf = make(chan bool, 100) // todo: size? // notify_updated_conf will be closed by conf.Load in all cases
 		config, stop_chan, err = conf.Load(ConfigDir, ConsulAddr, ConsulPrefix, ConsulToken, ConsulDatacenter, notify_updated_conf)
 	} else {
 		notify_updated_conf = make(chan bool, 1) // dummy, won't receive anything
@@ -129,6 +137,19 @@ func do_serve() bool {
 		time.Sleep(time.Duration(30) * time.Second)
 		return true
 	}
+
+	if len(ConsulAddr) > 0 && len(ConsulLdapServiceName) > 0 {
+		// discover LDAP servers through Consul health checks
+		discovery, err = conf.NewDiscoveryLdap(config, ConsulAddr, ConsulToken, ConsulLdapDatacenter, ConsulLdapTag, ConsulLdapServiceName)
+		if err != nil {
+			log.Log.WithError(err).Error("Error initializing LDAP discovery. Discovery is disabled.")
+			discovery = nil
+		} else {
+			discovery.Watch()
+			defer discovery.StopWatch()
+		}
+	}
+
 	// it is our job to close stop_chan when we are not interested in consul config updates anymore
 	if stop_chan != nil {
 		defer close(stop_chan)
@@ -158,7 +179,7 @@ func do_serve() bool {
 
 	mngr.Counter(model.RESTARTS).Incr()
 
-	err = auth.CheckLdapConn(config)
+	err = auth.CheckLdapConn(config, discovery)
 	if err != nil {
 		log.Log.WithError(err).Error("Connection to LDAP failed. Sleeping a while and restarting.")
 		mngr.Counter(model.LDAP_CONN_ERROR).Incr()
@@ -168,7 +189,7 @@ func do_serve() bool {
 
 	// install signal handlers
 	sig_chan := make(chan os.Signal, 1)
-	signal.Notify(sig_chan, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	signal.Notify(sig_chan, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP, syscall.SIGUSR1)
 
 	ctx := context.Background()
 	api_ctx, cancel_api_ctx := context.WithTimeout(context.Background(), time.Duration(time.Second))
@@ -179,8 +200,8 @@ func do_serve() bool {
 		defer cancel_ctx()
 	}
 
-	server, done := StartHttp(config, mngr)
-	api, api_done := StartApi(config, mngr)
+	server, done := StartHttp(config, discovery, mngr)
+	api, api_done := StartApi(config, discovery, mngr)
 
 	select {
 	// wait for either a signal, or that the HTTP server stops
@@ -236,6 +257,14 @@ func do_serve() bool {
 			<-done
 			<-api_done
 			mngr.Counter(model.SIGHUP).Incr()
+			return true
+		case syscall.SIGUSR1:
+			log.Log.Info("SIGUSR1 received: unable to work. Sleeping then restarting.")
+			server.Shutdown(ctx)
+			api.Shutdown(api_ctx)
+			<-done
+			<-api_done
+			time.Sleep(time.Duration(30) * time.Second)
 			return true
 		default:
 			server.Shutdown(ctx)
@@ -307,7 +336,7 @@ func EventFromRequest(r *http.Request, config *conf.GlobalConfig) (e *model.Even
 	return e
 }
 
-func StartApi(config *conf.GlobalConfig, mngr *stats.StatsManager) (*http.Server, chan bool) {
+func StartApi(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *stats.StatsManager) (*http.Server, chan bool) {
 	mux := http.NewServeMux()
 	server := &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", config.Api.BindAddr, config.Api.Port),
@@ -323,14 +352,14 @@ func StartApi(config *conf.GlobalConfig, mngr *stats.StatsManager) (*http.Server
 	}
 
 	check_handler := func(w http.ResponseWriter, r *http.Request) {
-		err := auth.CheckLdapConn(config)
+		err := auth.CheckLdapConn(config, discovery)
 		if err != nil {
 			// we have a connection problem to LDAP...
 			log.Log.WithError(err).Error("Check LDAP connection failed")
 			// first reply that the health check is negative
 			w.WriteHeader(500)
 			// then send signal to myself to stop the HTTP server
-			sighup()
+			sigusr()
 		} else {
 			// we're alive
 			w.WriteHeader(200)
@@ -359,7 +388,7 @@ func StartApi(config *conf.GlobalConfig, mngr *stats.StatsManager) (*http.Server
 			w.WriteHeader(403)
 			return
 		}
-		err := auth.Authenticate(username, password, config)
+		err := auth.Authenticate(username, password, config, discovery)
 		if err == nil {
 			w.WriteHeader(200)
 			return
@@ -367,15 +396,19 @@ func StartApi(config *conf.GlobalConfig, mngr *stats.StatsManager) (*http.Server
 		if errwrap.ContainsType(err, new(auth.LdapOpError)) {
 			w.WriteHeader(500)
 			log.Log.WithError(err).WithField("username", username).Error("LDAP operational error happened in /auth")
-			sighup()
+			sigusr()
 			return
+		} else if errwrap.ContainsType(err, new(auth.NoLdapServer)) {
+			w.WriteHeader(500)
+			log.Log.WithError(err).Error("No LDAP server is available.")
+			sigusr()
 		} else if errwrap.ContainsType(err, new(auth.LdapAuthError)) {
 			w.WriteHeader(403)
 			return
 		} else {
 			w.WriteHeader(500)
 			log.Log.WithError(err).WithField("username", username).Error("Unexpected error happened in /auth")
-			sighup()
+			sigusr()
 			return
 		}
 	}
@@ -470,7 +503,6 @@ func StartApi(config *conf.GlobalConfig, mngr *stats.StatsManager) (*http.Server
 				log.Log.WithError(err).Error("API server operational error")
 			}
 		}
-		done <- true
 		close(done)
 	}()
 
@@ -478,7 +510,7 @@ func StartApi(config *conf.GlobalConfig, mngr *stats.StatsManager) (*http.Server
 
 }
 
-func StartHttp(config *conf.GlobalConfig, mngr *stats.StatsManager) (*http.Server, chan bool) {
+func StartHttp(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *stats.StatsManager) (*http.Server, chan bool) {
 
 	mux := http.NewServeMux()
 	server := &http.Server{
@@ -534,7 +566,7 @@ func StartHttp(config *conf.GlobalConfig, mngr *stats.StatsManager) (*http.Serve
 		}
 
 		// todo: measure auth time
-		err := auth.Authenticate(ev.Username, ev.Password, config)
+		err := auth.Authenticate(ev.Username, ev.Password, config, discovery)
 
 		if err == nil {
 			ev.Message = "Auth is succesful (not cached)"
@@ -570,6 +602,13 @@ func StartHttp(config *conf.GlobalConfig, mngr *stats.StatsManager) (*http.Serve
 			return
 		}
 
+		if errwrap.ContainsType(err, new(auth.NoLdapServer)) {
+			ev.Message = err.Error()
+			ev.Result = model.OP_ERROR
+			ev.RetCode = 500
+			return
+		}
+
 		ev.Message = fmt.Sprintf("Unexpected error: %s", err.Error())
 		ev.Result = model.OP_ERROR
 		ev.RetCode = 500
@@ -598,7 +637,7 @@ func StartHttp(config *conf.GlobalConfig, mngr *stats.StatsManager) (*http.Serve
 			}
 			// restart and wait if there was an operational error
 			if ev.RetCode == 500 {
-				sighup()
+				sigusr()
 			}
 		}
 	}()
@@ -614,7 +653,6 @@ func StartHttp(config *conf.GlobalConfig, mngr *stats.StatsManager) (*http.Serve
 		}
 
 		close(event_chan)
-		done <- true
 		close(done)
 
 		if err != nil {
