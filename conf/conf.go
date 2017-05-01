@@ -194,6 +194,8 @@ func (c *GlobalConfig) Check() error {
 	return nil
 }
 
+
+// todo: simplify
 func Load(dirname, c_addr, c_prefix, c_token, c_dtctr string, consul_notify chan bool) (conf *GlobalConfig, stop_chan chan bool, err error) {
 	defer func() {
 		// sometimes viper panics

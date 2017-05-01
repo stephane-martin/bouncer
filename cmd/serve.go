@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -279,6 +280,41 @@ func do_serve() bool {
 
 func EventFromRequest(r *http.Request, config *conf.GlobalConfig) (e *model.Event) {
 	e = model.NewEmptyEvent()
+	e.Username = strings.TrimSpace(r.FormValue("username"))
+	e.Password = strings.TrimSpace(r.FormValue("password"))
+
+	uri := strings.TrimSpace(r.FormValue("uri"))
+	if len(uri) > 0 {
+		parsed_uri, err := url.Parse(uri)
+		if err != nil {
+			e.RetCode = 400
+			e.Result = model.INVALID_REQUEST
+			e.Message = "The passed URI could not be parsed"
+			return e
+		}
+		e.Host = parsed_uri.Hostname()
+		e.Port = parsed_uri.Port()
+		e.Uri = parsed_uri.RequestURI()
+		e.Proto = parsed_uri.Scheme
+	} else {
+		e.Host = ""
+		e.Uri = ""
+		e.Port = ""
+		e.Proto = ""
+	}
+
+	if len(e.Username) == 0 || len(e.Password) == 0 {
+		e.RetCode = 403
+		e.Result = model.FAIL_AUTH
+		e.Message = "Empty username or empty password"
+		return e
+	}
+
+	return e
+}
+
+func EventFromSubRequest(r *http.Request, config *conf.GlobalConfig) (e *model.Event) {
+	e = model.NewEmptyEvent()
 	authorization := strings.TrimSpace(r.Header.Get(config.Http.AuthorizationHeader))
 	e.Host = strings.TrimSpace(r.Header.Get(config.Http.OriginalHostHeader))
 	e.Uri = strings.TrimSpace(r.Header.Get(config.Http.OriginalUriHeader))
@@ -328,7 +364,7 @@ func EventFromRequest(r *http.Request, config *conf.GlobalConfig) (e *model.Even
 	e.Username = strings.TrimSpace(splits[0])
 	e.Password = strings.TrimSpace(splits[1])
 	if len(e.Username) == 0 || len(e.Password) == 0 {
-		e.RetCode = 401
+		e.RetCode = 403
 		e.Result = model.FAIL_AUTH
 		e.Message = "Empty username or empty password"
 		return e
@@ -379,38 +415,6 @@ func StartApi(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *st
 		w.WriteHeader(200)
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Write([]byte(config.Export()))
-	}
-
-	auth_handler := func(w http.ResponseWriter, r *http.Request) {
-		username := strings.TrimSpace(r.FormValue("username"))
-		password := strings.TrimSpace(r.FormValue("password"))
-		if len(username) == 0 || len(password) == 0 {
-			w.WriteHeader(403)
-			return
-		}
-		err := auth.Authenticate(username, password, config, discovery)
-		if err == nil {
-			w.WriteHeader(200)
-			return
-		}
-		if errwrap.ContainsType(err, new(auth.LdapOpError)) {
-			w.WriteHeader(500)
-			log.Log.WithError(err).WithField("username", username).Error("LDAP operational error happened in /auth")
-			sigusr()
-			return
-		} else if errwrap.ContainsType(err, new(auth.NoLdapServer)) {
-			w.WriteHeader(500)
-			log.Log.WithError(err).Error("No LDAP server is available.")
-			sigusr()
-		} else if errwrap.ContainsType(err, new(auth.LdapAuthError)) {
-			w.WriteHeader(403)
-			return
-		} else {
-			w.WriteHeader(500)
-			log.Log.WithError(err).WithField("username", username).Error("Unexpected error happened in /auth")
-			sigusr()
-			return
-		}
 	}
 
 	events_handler := func(w http.ResponseWriter, r *http.Request) {
@@ -483,7 +487,6 @@ func StartApi(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *st
 	mux.HandleFunc("/status", status_handler)
 	mux.HandleFunc("/conf", config_handler)
 	mux.HandleFunc("/check", check_handler)
-	mux.HandleFunc("/auth", auth_handler)
 	mux.HandleFunc("/reload", reload_handler)
 
 	if config.Redis.Enabled {
@@ -533,10 +536,8 @@ func StartHttp(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *s
 		}
 	}
 
-	main_handler := func(w http.ResponseWriter, r *http.Request) {
+	event_handler := func(w http.ResponseWriter, ev *model.Event) {
 		var hmac_b []byte
-
-		ev := EventFromRequest(r, config)
 
 		// make sure we post an answer
 		defer func() {
@@ -588,7 +589,7 @@ func StartHttp(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *s
 		if errwrap.ContainsType(err, new(auth.LdapAuthError)) {
 			ev.Message = fmt.Sprintf("Auth failed: %s", err.Error())
 			ev.Result = model.FAIL_AUTH
-			ev.RetCode = 401
+			ev.RetCode = 403
 			if config.Http.FailedAuthDelay > 0 {
 				// in auth context it is good practice to add a bit of random to counter time based attacks
 				n, err := rand.Int(rand.Reader, big.NewInt(1000))
@@ -614,7 +615,18 @@ func StartHttp(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *s
 		ev.RetCode = 500
 	}
 
-	mux.HandleFunc("/", main_handler)
+	nginx_subrequest_handler := func(w http.ResponseWriter, r *http.Request) {
+		ev := EventFromSubRequest(r, config)
+		event_handler(w, ev)
+	}
+
+	direct_auth_handler := func (w http.ResponseWriter, r *http.Request) {
+		ev := EventFromRequest(r, config)
+		event_handler(w, ev)
+	}
+
+	mux.HandleFunc("/nginx", nginx_subrequest_handler)
+	mux.HandleFunc("/auth", direct_auth_handler)
 
 	go func() {
 		// postprocessing events

@@ -131,8 +131,7 @@ server {
 
     location = /_auth {
         internal;
-        # A.B.C.D: Listen IP for nginx-auth-ldap
-        proxy_pass http://A.B.C.D:PORT;
+        proxy_pass http://NGINX-AUTH-LDAP-HOST:NGINX-AUTH-LDAP-PORT/nginx;
         proxy_pass_request_body off;
         proxy_set_header Content-Length "";
 

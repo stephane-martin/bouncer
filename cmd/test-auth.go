@@ -12,6 +12,7 @@ import (
 
 var username string
 var password string
+var uri string
 
 // test-authCmd represents the test-auth command
 var testauthCmd = &cobra.Command{
@@ -64,4 +65,5 @@ func init() {
 	RootCmd.AddCommand(testauthCmd)
 	testauthCmd.Flags().StringVar(&username, "username", "", "Username")
 	testauthCmd.Flags().StringVar(&password, "password", "", "Password")
+	testauthCmd.Flags().StringVar(&uri, "uri", "", "Requested URI")
 }
