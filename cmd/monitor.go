@@ -58,9 +58,12 @@ func monitor() {
 	}
 
 	client := config.GetRedisClient()
+	now := time.Now().UnixNano()
+	pubsub := client.Subscribe(stats.NOTIFICATIONS_REDIS_CHAN)
+	defer pubsub.Close()
+	msg_chan := pubsub.Channel()
 
 	if back_period > 0 {
-		now := time.Now().UnixNano()
 		from := now - (back_period * 1000000000)
 		r := redis.ZRangeBy{Min: strconv.FormatInt(from, 10), Max: strconv.FormatInt(now, 10)}
 		pipe := client.TxPipeline()
@@ -98,9 +101,6 @@ func monitor() {
 			}
 		}
 	}
-	pubsub := client.Subscribe(stats.NOTIFICATIONS_REDIS_CHAN)
-	defer pubsub.Close()
-	msg_chan := pubsub.Channel()
 
 	// install signal handlers
 	sig_chan := make(chan os.Signal, 1)

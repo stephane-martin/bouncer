@@ -140,6 +140,9 @@ server {
         proxy_set_header X-Forwarded-Server $http_host;
         proxy_set_header X-Forwarded-Host $http_host:443;
         proxy_set_header X-Original-URI $request_uri;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Forwarded "for=$remote_addr; proto=https";
         proxy_set_header X-Forwarded-Port 443;
         proxy_set_header X-Forwarded-Proto https;
 

@@ -283,6 +283,10 @@ func EventFromRequest(r *http.Request, config *conf.GlobalConfig) (e *model.Even
 	e = model.NewEmptyEvent()
 	e.Username = strings.TrimSpace(r.FormValue("username"))
 	e.Password = strings.TrimSpace(r.FormValue("password"))
+	e.ClientIP = strings.TrimSpace(r.Header.Get(config.Http.RealIPHeader))
+	if len(e.ClientIP) == 0 {
+		e.ClientIP = r.RemoteAddr
+	}
 
 	uri := strings.TrimSpace(r.FormValue("uri"))
 	if len(uri) > 0 {
@@ -290,7 +294,7 @@ func EventFromRequest(r *http.Request, config *conf.GlobalConfig) (e *model.Even
 		if err != nil {
 			e.RetCode = 400
 			e.Result = model.INVALID_REQUEST
-			e.Message = "The passed URI could not be parsed"
+			e.Message = fmt.Sprintf("The passed URI could not be parsed: %s", uri)
 			return e
 		}
 		e.Host = parsed_uri.Hostname()
@@ -321,6 +325,10 @@ func EventFromSubRequest(r *http.Request, config *conf.GlobalConfig) (e *model.E
 	e.Uri = strings.TrimSpace(r.Header.Get(config.Http.OriginalUriHeader))
 	e.Port = strings.TrimSpace(r.Header.Get(config.Http.OriginalPortHeader))
 	e.Proto = strings.TrimSpace(r.Header.Get(config.Http.OriginalProtoHeader))
+	e.ClientIP = strings.TrimSpace(r.Header.Get(config.Http.RealIPHeader))
+	if len(e.ClientIP) == 0 {
+		e.ClientIP = r.RemoteAddr
+	}
 
 	if len(authorization) == 0 {
 		e.RetCode = 401

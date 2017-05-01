@@ -53,6 +53,7 @@ type Event struct {
 	Timestamp int64  `json:"timestamp,string"`
 	Message   string `json:"message"`
 	Result    Result `json:"result"`
+	ClientIP  string `json:"client_ip"`
 }
 
 const EventStringFormat string = `Timestamp %d
@@ -60,6 +61,7 @@ Proto: %s
 Host: %s
 Port: %s
 Uri: %s
+Client IP: %s
 Username: %s
 Returned code: %d
 Result: %d
@@ -67,7 +69,7 @@ Message: %s
 `
 
 func (e *Event) String() string {
-	return fmt.Sprintf(EventStringFormat, e.Timestamp, e.Proto, e.Host, e.Port, e.Uri, e.Username, e.RetCode, e.Result, e.Message)
+	return fmt.Sprintf(EventStringFormat, e.Timestamp, e.Proto, e.Host, e.Port, e.Uri, e.ClientIP, e.Username, e.RetCode, e.Result, e.Message)
 }
 
 type PackOfEvents []*Event

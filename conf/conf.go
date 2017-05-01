@@ -58,6 +58,7 @@ type HttpConfig struct {
 	OriginalHostHeader  string `mapstructure:"original_host_header" toml:"original_host_header"`
 	OriginalPortHeader  string `mapstructure:"original_port_header" toml:"original_port_header"`
 	OriginalProtoHeader string `mapstructure:"original_proto_header" toml:"original_proto_header"`
+	RealIPHeader        string `mapstructure:"real_ip_header" toml:"real_ip_header"`
 	FailedAuthDelay     uint32 `mapstructure:"failed_auth_delay_seconds" toml:"failed_auth_delay_seconds"`
 	ShutdownTimeout     uint32 `mapstructure:"shutdown_timeout_seconds" toml:"shutdown_timeout_seconds"`
 	Https               bool   `mapstructure:"https" toml:"https"`
@@ -218,6 +219,7 @@ func set_defaults(v *viper.Viper) {
 	v.SetDefault("http.original_host_header", "X-Forwarded-Host")
 	v.SetDefault("http.original_port_header", "X-Forwarded-Port")
 	v.SetDefault("http.original_proto_header", "X-Forwarded-Proto")
+	v.SetDefault("http.real_ip_header", "X-Real-Ip")
 	v.SetDefault("http.failed_auth_delay_seconds", 2)
 	v.SetDefault("http.shutdown_timeout_seconds", 2)
 	v.SetDefault("http.https", false)
@@ -263,6 +265,7 @@ func set_environment_variables(v *viper.Viper) {
 	v.BindEnv("http.original_host_header", "NAL_ORIGINAL_HOST")
 	v.BindEnv("http.original_proto_header", "NAL_ORIGINAL_PROTO")
 	v.BindEnv("http.original_port_header", "NAL_ORIGINAL_PORT")
+	v.BindEnv("http.real_ip_header", "NAL_REAL_IP")
 	v.BindEnv("http.failed_auth_delay_seconds", "NAL_FAILED_DELAY")
 	v.BindEnv("http.shutdown_timeout_seconds", "NAL_SHUTDOWN_TIMEOUT")
 	v.BindEnv("http.https", "NAL_HTTPS")
