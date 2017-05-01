@@ -65,7 +65,7 @@ services:
 nginx-auth-ldap serve --consul=http://127.0.0.1:8500 --service slapd --ldapdatacenter ldapdc
 ```
 
-This means: look for a service called `slapd`, that's defined in the `mail`
+This means: look for a service called `slapd`, that's defined in the `ldapdc`
 Consul datacenter. The `slapd` hosts and ports, discovered in Consul, completed by
 `defaultldap` parameters, will be used as LDAP servers to perform the 
 authentication.
