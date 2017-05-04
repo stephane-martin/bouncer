@@ -311,6 +311,19 @@
 			"revisionTime": "2017-03-22T09:33:23Z"
 		},
 		{
+			"checksumSHA1": "nAu0XmCeC6WnUySyI8R7w4cxAqU=",
+			"path": "golang.org/x/crypto/curve25519",
+			"revision": "04eae0b62feaaf659a0ce2c4e8dc70b6ae2fff67",
+			"revisionTime": "2017-05-03T14:47:11Z"
+		},
+		{
+			"checksumSHA1": "7f9IBI5XfNx7PDF7VsufuXD6mME=",
+			"path": "golang.org/x/crypto/nacl",
+			"revision": "04eae0b62feaaf659a0ce2c4e8dc70b6ae2fff67",
+			"revisionTime": "2017-05-03T14:47:11Z",
+			"tree": true
+		},
+		{
 			"checksumSHA1": "IIhFTrLlmlc6lEFSitqi4aw2lw0=",
 			"path": "golang.org/x/crypto/openpgp",
 			"revision": "0242f07995e684be54f2a2776327141acf1cef91",
@@ -345,6 +358,18 @@
 			"path": "golang.org/x/crypto/openpgp/s2k",
 			"revision": "0242f07995e684be54f2a2776327141acf1cef91",
 			"revisionTime": "2017-03-22T09:33:23Z"
+		},
+		{
+			"checksumSHA1": "jyP8QOzvouqRy4o3MKNjBl/K3o8=",
+			"path": "golang.org/x/crypto/poly1305",
+			"revision": "04eae0b62feaaf659a0ce2c4e8dc70b6ae2fff67",
+			"revisionTime": "2017-05-03T14:47:11Z"
+		},
+		{
+			"checksumSHA1": "w8PESKJweP+BCAxCYPU1QC08qUU=",
+			"path": "golang.org/x/crypto/salsa20/salsa",
+			"revision": "04eae0b62feaaf659a0ce2c4e8dc70b6ae2fff67",
+			"revisionTime": "2017-05-03T14:47:11Z"
 		},
 		{
 			"checksumSHA1": "ZaU56svwLgiJD0y8JOB3+/mpYBA=",
