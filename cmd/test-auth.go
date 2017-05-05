@@ -51,12 +51,13 @@ works for a single username and password.`,
 			}
 		}
 
-		err = auth.Authenticate(username, password, config, discovery)
+		username_out, email, err := auth.Authenticate(username, password, config, discovery)
 		if err != nil {
 			log.Log.WithError(err).Error("Authentication failed")
 			os.Exit(-1)
 		} else {
-			log.Log.Info("Authentication is successful")
+			log.Log.WithField("username_in", username).WithField("username_out", username_out).WithField("email", email).
+				Info("Authentication is successful")
 		}
 	},
 }
