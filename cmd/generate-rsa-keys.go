@@ -8,7 +8,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
-	"encoding/asn1"
+	//"encoding/asn1"
 
 	"github.com/spf13/cobra"
 )
@@ -32,22 +32,29 @@ var generateRsaKeysCmd = &cobra.Command{
 		private_key, err := rsa.GenerateKey(rand.Reader, bits)
 		if err != nil {
 			fmt.Printf("Error generating the private key: %s\n", err)
+			os.Exit(-1)
 		}
 		private_key_pem := &pem.Block{
 			Type:  "PRIVATE KEY",
 			Bytes: x509.MarshalPKCS1PrivateKey(private_key),
 		}
 		private_key_serialized := pem.EncodeToMemory(private_key_pem)
+
+		//asn_b, _ := asn1.Marshal(private_key.PublicKey)
+		by, err := x509.MarshalPKIXPublicKey(&private_key.PublicKey)
+		if err != nil {
+			fmt.Printf("Failed to marshal the public key: %s\n", err)	
+			os.Exit(-1)
+		}
+		public_key_pem := &pem.Block{
+			Type:  "PUBLIC KEY",
+			Bytes: by,
+		}
+		public_key_serialized := pem.EncodeToMemory(public_key_pem)
+
 		fmt.Println()
 		fmt.Println(string(private_key_serialized))
 		fmt.Println()
-
-		asn_b, _ := asn1.Marshal(private_key.PublicKey)
-		public_key_pem := &pem.Block{
-			Type:  "PUBLIC KEY",
-			Bytes: asn_b,
-		}
-		public_key_serialized := pem.EncodeToMemory(public_key_pem)
 		fmt.Println(string(public_key_serialized))
 		fmt.Println()
 
