@@ -42,7 +42,7 @@ that nginx-auth-ldap will use, merging your configuration and the defaults.`,
 				fmt.Println("\nDiscovered LDAP\n===============")
 				servers := discovery.Get()
 				for _, server := range servers {
-					fmt.Println(server)
+					fmt.Println(&server)
 				}
 			}
 		}
