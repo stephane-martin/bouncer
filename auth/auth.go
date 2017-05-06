@@ -42,7 +42,7 @@ func (e *NoLdapServer) Error() string {
 	return "No LDAP server is available"
 }
 
-func Authenticate(username string, password string, c *conf.GlobalConfig, discovery *conf.DiscoveryLdap) error {
+func Authenticate(username string, password string, c *conf.GlobalConfig, discovery *conf.DiscoveryLdap) (string, string, error) {
 	var err error
 	// try each LDAP configuration in a random order until we get a response
 	ldap_servers := []conf.LdapConfig{}
@@ -57,20 +57,23 @@ func Authenticate(username string, password string, c *conf.GlobalConfig, discov
 		}
 	}
 	if len(ldap_servers) == 0 {
-		return &NoLdapServer{}	
+		return "", "", &NoLdapServer{}	
 	}
+	username_out := ""
+	email := ""
 	for _, i := range rand.Perm(len(ldap_servers)) {
 		l := ldap_servers[i]
+
 		log.Log.WithField("host", l.Host).WithField("port", l.Port).Debug("Trying LDAP server")
 		if l.AuthType == "directbind" {
-			err = DirectBind(username, password, &l)
+			username_out, email, err = DirectBind(username, password, &l)
 		} else if l.AuthType == "search" {
-			err = Search(username, password, &l)
+			username_out, email, err = Search(username, password, &l)
 		} else {
-			return fmt.Errorf("Unknown LDAP authentication type")
+			return "", "", fmt.Errorf("Unknown LDAP authentication type")
 		}
 		if err == nil {
-			return err
+			return username_out, email, nil
 		}
 		if errwrap.ContainsType(err, new(LdapOpError)) {
 			// Operational Error => try next LDAP server...
@@ -78,10 +81,10 @@ func Authenticate(username string, password string, c *conf.GlobalConfig, discov
 			continue
 		}
 		// authentication fails, return the failure
-		return err
+		return "", "", err
 	}
 	// return the last (operational) error
-	return err
+	return "", "", err
 }
 
 func GetOneLdapConfig(c *conf.GlobalConfig) *conf.LdapConfig {

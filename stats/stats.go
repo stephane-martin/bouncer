@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"time"
 
 	"github.com/go-redis/redis"
 	"github.com/hashicorp/errwrap"
+	"github.com/stephane-martin/nginx-auth-ldap/log"
 	"github.com/stephane-martin/nginx-auth-ldap/model"
 )
 
@@ -72,8 +74,8 @@ func NewPack() *PackOfMeasures {
 	return &m
 }
 
-func GetRange(now int64, nb_seconds int64) redis.ZRangeBy {
-	return redis.ZRangeBy{Min: strconv.FormatInt(now-(nb_seconds*1000000000), 10), Max: strconv.FormatInt(now, 10)}
+func GetRange(from int64, to int64) redis.ZRangeBy {
+	return redis.ZRangeBy{Min: strconv.FormatInt(from, 10), Max: strconv.FormatInt(to, 10)}
 }
 
 type Counter struct {
@@ -136,7 +138,7 @@ func (s *StatsManager) Store(e *model.RequestEvent) error {
 		return nil
 	}
 	set := fmt.Sprintf(SET_REQUESTS_TPL, e.Result)
-	score := float64(e.Timestamp)
+	score := float64(e.Timestamp.UnixNano())
 	value, err := json.Marshal(*e)
 	if err == nil {
 		pipe := s.Client.TxPipeline()
@@ -153,11 +155,42 @@ func (s *StatsManager) Store(e *model.RequestEvent) error {
 	return nil
 }
 
-func (s *StatsManager) GetHitsForPeriod(now int64, nb_seconds int64) (*HitsMeasure, error) {
+func (s *StatsManager) GetLogs(from time.Time, to time.Time) (map[model.Result](*model.PackOfEvents), error) {
+	pipe := s.Client.TxPipeline()
+	cmds := map[model.Result]*redis.StringSliceCmd{}
+	for _, t := range model.ResultTypes {
+		sset := fmt.Sprintf(SET_REQUESTS_TPL, t)
+		r := redis.ZRangeBy{Min: strconv.FormatInt(from.UnixNano(), 10), Max: strconv.FormatInt(to.UnixNano(), 10)}
+		cmds[t] = pipe.ZRangeByScore(sset, r)
+	}
+	_, err := pipe.Exec()
+	if err != nil {
+		return nil, err
+	}
+	packs_of_events := map[model.Result](*model.PackOfEvents){}
+	for _, t := range model.ResultTypes {
+		packs_of_events[t] = &(model.PackOfEvents{})
+		pack := packs_of_events[t]
+		cmd := cmds[t]
+		for _, event_s := range cmd.Val() {
+			e := model.RequestEvent{}
+			err := json.Unmarshal([]byte(event_s), &e)
+			if err != nil {
+				log.Log.WithError(err).WithField("event", event_s).Warn("Error decoding event from Redis")
+			} else {
+				*pack = append(*pack, &e)
+			}
+		}
+		sort.Sort(*pack)
+	}
+	return packs_of_events, nil
+}
+
+func (s *StatsManager) GetHitsForPeriod(from int64, to int64) (*HitsMeasure, error) {
 	if s.Client == nil {
 		return nil, fmt.Errorf("No Redis client")
 	}
-	r := GetRange(now, nb_seconds)
+	r := GetRange(from, to)
 	measurement := HitsMeasure{}
 	pipe := s.Client.TxPipeline()
 	m := map[model.Result]*redis.IntCmd{}
@@ -184,7 +217,7 @@ func (s *StatsManager) GetStats(all_ranges map[string]int64) (*PackOfMeasures, e
 	// get number of recent requests
 	measurements := NewPack()
 	for period_name, seconds := range all_ranges {
-		measurement, err := s.GetHitsForPeriod(now, seconds)
+		measurement, err := s.GetHitsForPeriod(now-(seconds*1000000000), now)
 		if err != nil {
 			return nil, errwrap.Wrapf("error getting the number of recent requests from Redis: {{err}}", err)
 		}

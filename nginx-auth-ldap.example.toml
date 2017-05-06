@@ -1,3 +1,6 @@
+# nginx-auth-ldap example configuration file
+# should be saved as nginx-auth-ldap.toml, for example in /etc
+
 # Multiple LDAP servers can be defined in [[ldap]] sections
 [[ldap]]
 # LDAP directory host (default "127.0.0.1")
@@ -34,6 +37,10 @@ auth_type = "directbind"
 # default "uid=%s,ou=users,dc=example,dc=org"
 user_dn_template = "uid=%s,ou=users,dc=example,dc=org"
 
+# LDAP attributes
+# this LDAP attribute will be used as the return username
+username_attribute = "uid"
+
 # Whether to use TLS to connect to LDAP
 # Can be 'none', 'starttls' or 'tls'
 # If not 'none', provide:
@@ -50,13 +57,16 @@ key = "" # (default "")
 insecure = false # default 'false'
 
 # [[ldap]]
+# host = "10.75.1.1"
 # ...
 # you can provide multiple LDAP configurations. The authentications will be
 # randomly balanced between them.
 
 [defaultldap]
-# Default parameters that would apply to all the defined LDAP servers
-port = 636
+# Default parameters that would apply to all the defined LDAP servers.
+# All the possible parameters valid under [[ldap]] are also valid under
+# [defaultldap]
+port = 389
 insecure = true
 
 [api]
@@ -72,21 +82,16 @@ bind_addr = "0.0.0.0" # default "0.0.0.0"
 port = 8080 # default 8080
 # the HTTP Basic Auth realm
 realm = "Example realm" # default "Example realm"
-# The header name that Nginx uses to forward the user's credenials
-authorization_header = "Authorization" # default "Authorization"
-# The header name to send to the final client, when credentials are not provided
-authenticate_header = "WWW-Authenticate" # default "WWW-Authenticate"
-# The header name that Nginx uses to forward the requested URI (used in logging)
-original_uri_header = "X-Original-Uri" # default "X-Original-Uri" (beware of golang upcase normalization...)
 # When the authentication fails, force the client to wait N seconds (put 0 to disable)
 failed_auth_delay_seconds = 2 # default 2
 # Timeout for the HTTP shutdown, in seconds
 shutdown_timeout_seconds = 2 # default 2
 # Whether to use HTTPS
 https = false # default false
-# if using HTTPS, provide the path to the certificate and the path to the private_key
+# if using HTTPS for the Auth endpoints, provide the path to the certificate and the path to the private key
 certificate = "" # default ""
 key = "" # default ""
+mask_password = false # whether to mask the user password in the passed Authorization header
 
 [cache]
 # Authorization header is sent by the browser with each request.
@@ -96,13 +101,10 @@ key = "" # default ""
 # is not requested each time a request arrives
 # A successful authentication is cached for N seconds
 # put to 0 to disable caching
-expires_seconds = 300 # default 300
+expires = "5m" # default "5m" = 5 minutes
 
-# nginx-auth-ldap caches the Authorization header. It would inappropriate to
-# store users passwords in memory in cleartext. Instead, we cache a HMAC of
-# the Authorization header.
-# 'secret' is the secret used by the HMAC
-# if 'secret' is empty, a random secret will be generated
+# secret to encrypt the nginx-auth-ldap "caching cookie"
+# if 'secret' is empty, a random secret will be generated in each run
 secret = "" # default ""
 
 [redis]
@@ -124,4 +126,9 @@ poolsize = 10
 # if expires_seconds is > 0, requests older than that number of seconds will
 # be purged
 expires_seconds = 86400
+
+[signature]
+# if provided, will be used to generate and sign a JWT token for the backend
+# services, containing the authenticated user identity.
+private_key_path = "/path/to/key.pem"
 

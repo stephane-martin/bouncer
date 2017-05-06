@@ -6,11 +6,9 @@ import (
 	"os"
 	"os/signal"
 	"sort"
-	"strconv"
 	"syscall"
 	"time"
 
-	"github.com/go-redis/redis"
 	"github.com/spf13/cobra"
 	"github.com/stephane-martin/nginx-auth-ldap/conf"
 	"github.com/stephane-martin/nginx-auth-ldap/log"
@@ -22,18 +20,18 @@ import (
 var monitorCmd = &cobra.Command{
 	Use:   "monitor",
 	Short: "Watch the stream of requests",
-	Long: `monitor displays the logs of recent requests and prints new requests
+	Long: `monitor displays the logs of recent requests and prints new requests as they come
 as they come.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		monitor()
 	},
 }
 
-var back_period int64
+var back_duration time.Duration
 
 func init() {
 	RootCmd.AddCommand(monitorCmd)
-	monitorCmd.Flags().Int64Var(&back_period, "back", 0, "Also print the requests that happened in the last number of seconds")
+	monitorCmd.Flags().DurationVar(&back_duration, "back", 0, "Also print the requests that have happened for the specified amount of time")
 }
 
 func monitor() {
@@ -58,35 +56,25 @@ func monitor() {
 	}
 
 	client := config.GetRedisClient()
-	now := time.Now().UnixNano()
+	mngr := stats.NewStatsManager(client)
+	defer mngr.Close()
+	now := time.Now()
 	pubsub := client.Subscribe(stats.NOTIFICATIONS_REDIS_CHAN)
 	defer pubsub.Close()
 	msg_chan := pubsub.Channel()
 
-	if back_period > 0 {
-		from := now - (back_period * 1000000000)
-		r := redis.ZRangeBy{Min: strconv.FormatInt(from, 10), Max: strconv.FormatInt(now, 10)}
-		pipe := client.TxPipeline()
-		cmds := []*redis.StringSliceCmd{}
-		for _, t := range model.ResultTypes {
-			sset := fmt.Sprintf(stats.SET_REQUESTS_TPL, t)
-			cmds = append(cmds, pipe.ZRangeByScore(sset, r))
-		}
-		_, err := pipe.Exec()
+	if back_duration > 0 {
+		from := now.Add(-1 * back_duration)
+		packs, err := mngr.GetLogs(from, now)
 		if err != nil {
 			log.Log.WithError(err).Error("Error getting logs from Redis")
 			os.Exit(-1)
 		}
 		events := model.PackOfEvents{}
-		for _, cmd := range cmds {
-			for _, event_s := range cmd.Val() {
-				ev := model.RequestEvent{}
-				err := json.Unmarshal([]byte(event_s), &ev)
-				if err == nil {
-					events = append(events, &ev)
-				} else {
-					log.Log.WithError(err).WithField("event", event_s).Warn("Error decoding an event from Redis")
-				}
+		for _, t := range model.ResultTypes {
+			pack := *(packs[t])
+			for _, e := range pack {
+				events = append(events, e)
 			}
 		}
 		sort.Sort(events)

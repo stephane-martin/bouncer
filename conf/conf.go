@@ -3,13 +3,18 @@ package conf
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/rsa"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/dgrijalva/jwt-go"
 	"github.com/go-redis/redis"
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/errwrap"
@@ -19,28 +24,39 @@ import (
 )
 
 type GlobalConfig struct {
-	Ldap        []LdapConfig `mapstructure:"ldap" toml:"ldap"`
-	DefaultLdap LdapConfig   `mapstructure:"defaultldap" toml:"defaultldap"`
-	Http        HttpConfig   `mapstructure:"http" toml:"http"`
-	Api         ApiConfig    `mapstructure:"api" toml:"api"`
-	Cache       CacheConfig  `mapstructure:"cache" toml:"cache"`
-	Redis       RedisConfig  `mapstructure:"redis" toml:"redis"`
+	Ldap        []LdapConfig    `mapstructure:"ldap" toml:"ldap"`
+	DefaultLdap LdapConfig      `mapstructure:"defaultldap" toml:"defaultldap"`
+	Http        HttpConfig      `mapstructure:"http" toml:"http"`
+	Api         ApiConfig       `mapstructure:"api" toml:"api"`
+	Cache       CacheConfig     `mapstructure:"cache" toml:"cache"`
+	Redis       RedisConfig     `mapstructure:"redis" toml:"redis"`
+	Signature   SignatureConfig `mapstructure:"signature" toml:"signature"`
 }
 
 type LdapConfig struct {
-	Host             string `mapstructure:"host" toml:"host"`
-	Port             uint32 `mapstructure:"port" toml:"port"`
-	AuthType         string `mapstructure:"auth_type" toml:"auth_type"`
-	BindDn           string `mapstructure:"bind_dn" toml:"bind_dn"`
-	BindPassword     string `mapstructure:"bind_password" toml:"bind_password"`
-	UserSearchFilter string `mapstructure:"user_search_filter" toml:"user_search_filter"`
-	UserSearchBase   string `mapstructure:"user_search_base" toml:"user_search_base"`
-	UserDnTemplate   string `mapstructure:"user_dn_template" toml:"user_dn_template"`
-	TlsType          string `mapstructure:"tls_type" toml:"tls_type"`
-	CA               string `mapstructure:"certificate_authority" toml:"certificate_authority"`
-	Cert             string `mapstructure:"certificate" toml:"certificate"`
-	Key              string `mapstructure:"key" toml:"key"`
-	Insecure         bool   `mapstructure:"insecure" toml:"insecure"`
+	Host              string `mapstructure:"host" toml:"host"`
+	Port              uint32 `mapstructure:"port" toml:"port"`
+	AuthType          string `mapstructure:"auth_type" toml:"auth_type"`
+	BindDn            string `mapstructure:"bind_dn" toml:"bind_dn"`
+	BindPassword      string `mapstructure:"bind_password" toml:"bind_password"`
+	UserSearchFilter  string `mapstructure:"user_search_filter" toml:"user_search_filter"`
+	UserSearchBase    string `mapstructure:"user_search_base" toml:"user_search_base"`
+	UserDnTemplate    string `mapstructure:"user_dn_template" toml:"user_dn_template"`
+	UsernameAttribute string `mapstructure:"username_attribute" toml:"username_attribute"`
+	MailAttribute     string `mapstructure:"mail_attribute" toml:"mail_attribute"`
+	ReturnMail        bool   `mapstructure:"return_mail" toml:"return_mail"`
+	TlsType           string `mapstructure:"tls_type" toml:"tls_type"`
+	CA                string `mapstructure:"certificate_authority" toml:"certificate_authority"`
+	Cert              string `mapstructure:"certificate" toml:"certificate"`
+	Key               string `mapstructure:"key" toml:"key"`
+	Insecure          bool   `mapstructure:"insecure" toml:"insecure"`
+}
+
+func (l *LdapConfig) String() string {
+	buf := new(bytes.Buffer)
+	encoder := toml.NewEncoder(buf)
+	encoder.Encode(*l)
+	return buf.String()
 }
 
 type ApiConfig struct {
@@ -59,16 +75,22 @@ type HttpConfig struct {
 	OriginalPortHeader  string `mapstructure:"original_port_header" toml:"original_port_header"`
 	OriginalProtoHeader string `mapstructure:"original_proto_header" toml:"original_proto_header"`
 	RealIPHeader        string `mapstructure:"real_ip_header" toml:"real_ip_header"`
+	NalCookieName       string `mapstructure:"nal_cookie_name" toml:"nal_cookie_name"`
+	NalCookieHeader     string `mapstructure:"nal_cookie_header" toml:"nal_cookie_header"`
+	RemoteUserHeader    string `mapstructure:"remote_user_header" toml:"remote_user_header"`
+	JwtHeader           string `mapstructure:"jwt_header" toml:"jwt_header"`
 	FailedAuthDelay     uint32 `mapstructure:"failed_auth_delay_seconds" toml:"failed_auth_delay_seconds"`
 	ShutdownTimeout     uint32 `mapstructure:"shutdown_timeout_seconds" toml:"shutdown_timeout_seconds"`
 	Https               bool   `mapstructure:"https" toml:"https"`
 	Certificate         string `mapstructure:"certificate" toml:"certificate"`
 	Key                 string `mapstructure:"key" toml:"key"`
+	MaskPassword        bool   `mapstructure:"mask_password" toml:"mask_password"`
 }
 
 type CacheConfig struct {
-	Expires int32  `mapstructure:"expires_seconds" toml:"expires_seconds"`
-	Secret  string `mapstructure:"secret" toml:"secret"`
+	Expires       time.Duration `mapstructure:"expires" toml:"expires"`
+	Secret        string        `mapstructure:"secret" toml:"secret"`
+	SecretAsBytes []byte        `toml:"-"`
 }
 
 type RedisConfig struct {
@@ -79,6 +101,15 @@ type RedisConfig struct {
 	Poolsize uint32 `mapstructure:"poolsize" toml:"poolsize"`
 	Enabled  bool   `mapstructure:"enabled" toml:"enabled"`
 	Expires  int64  `mapstructure:"expires_seconds" toml:"expires_seconds"`
+}
+
+type SignatureConfig struct {
+	PrivateKeyPath string `mapstructure:"private_key_path" toml:"private_key_path"`
+	//PublicKeyPath string `mapstructure:"public_key_path" toml:"public_key_path"`
+	PrivateKeyContent string `mapstructure:"private_key_content" toml:"-"`
+	//PublicKeyContent string `mapstructure:"public_key_content" toml:"-"`
+	PrivateKey *rsa.PrivateKey `toml:"-"`
+	PublicKey  *rsa.PublicKey  `toml:"-"`
 }
 
 func New() *GlobalConfig {
@@ -117,19 +148,6 @@ func (c *GlobalConfig) GetRedisOptions() (opts *redis.Options) {
 
 func (c *GlobalConfig) GetRedisClient() *redis.Client {
 	return redis.NewClient(c.GetRedisOptions())
-}
-
-func (c *GlobalConfig) GenerateSecret() (secret []byte, err error) {
-	if len(c.Cache.Secret) == 0 {
-		secret = make([]byte, 32)
-		_, err = rand.Read(secret)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		secret = []byte(c.Cache.Secret)
-	}
-	return secret, nil
 }
 
 func (c *GlobalConfig) Check() error {
@@ -192,6 +210,25 @@ func (c *GlobalConfig) Check() error {
 		return fmt.Errorf("Redis pool size can't be 0")
 	}
 
+	if len(c.Cache.Secret) == 0 {
+		c.Cache.SecretAsBytes = make([]byte, 32)
+		_, err := rand.Read(c.Cache.SecretAsBytes)
+		if err != nil {
+			return errwrap.Wrapf("Error generating Cache.Secret: {{err}}", err)
+		}
+		log.Log.Info("Cache.Secret was not provided in configuration, so we generated one.")
+	} else {
+		dst := make([]byte, base64.StdEncoding.DecodedLen(len(c.Cache.Secret)))
+		_, err := base64.StdEncoding.Decode(dst, []byte(c.Cache.Secret))
+		if err != nil {
+			return errwrap.Wrapf("Error reading Cache.Secret: not base64 encoded", err)
+		}
+		if len(dst) < 32 {
+			return fmt.Errorf("Cache.Secret is too short")
+		}
+		c.Cache.SecretAsBytes = dst[:32]
+	}
+
 	return nil
 }
 
@@ -204,6 +241,9 @@ func set_defaults(v *viper.Viper) {
 	v.SetDefault("defaultldap.user_search_filter", "(uid=%s)")
 	v.SetDefault("defaultldap.user_search_base", "ou=users,dc=example,dc=org")
 	v.SetDefault("defaultldap.user_dn_template", "uid=%s,ou=users,dc=example,dc=org")
+	v.SetDefault("defaultldap.username_attribute", "uid")
+	v.SetDefault("defaultldap.mail_attribute", "mail")
+	v.SetDefault("defaultldap.return_mail", false)
 	v.SetDefault("defaultldap.tls_type", "none")
 	v.SetDefault("defaultldap.certificate_authority", "")
 	v.SetDefault("defaultldap.certificate", "")
@@ -220,16 +260,21 @@ func set_defaults(v *viper.Viper) {
 	v.SetDefault("http.original_port_header", "X-Forwarded-Port")
 	v.SetDefault("http.original_proto_header", "X-Forwarded-Proto")
 	v.SetDefault("http.real_ip_header", "X-Real-Ip")
+	v.SetDefault("http.nal_cookie_header", "X-Nal-Cookie")
+	v.SetDefault("http.remote_user_header", "X-Remote-User")
+	v.SetDefault("http.jwt_header", "X-Remote-Jwt")
+	v.SetDefault("http.nal_cookie_name", "NGINX_AUTH_LDAP")
 	v.SetDefault("http.failed_auth_delay_seconds", 2)
 	v.SetDefault("http.shutdown_timeout_seconds", 2)
 	v.SetDefault("http.https", false)
 	v.SetDefault("http.certificate", "")
 	v.SetDefault("http.key", "")
+	v.SetDefault("http.mask_password", false)
 
 	v.SetDefault("api.bind_addr", "127.0.0.1")
 	v.SetDefault("api.port", 8081)
 
-	v.SetDefault("cache.expires_seconds", 300)
+	v.SetDefault("cache.expires", "5m")
 	v.SetDefault("cache.secret", "")
 
 	v.SetDefault("redis.host", "127.0.0.1")
@@ -239,52 +284,9 @@ func set_defaults(v *viper.Viper) {
 	v.SetDefault("redis.poolsize", 10)
 	v.SetDefault("redis.enabled", false)
 	v.SetDefault("redis.expires_seconds", 86400)
-}
 
-func set_environment_variables(v *viper.Viper) {
-	v.BindEnv("defaultldap.host", "NAL_LDAP_HOST")
-	v.BindEnv("defaultldap.port", "NAL_LDAP_PORT")
-	v.BindEnv("defaultldap.auth_type", "NAL_AUTH_TYPE")
-	v.BindEnv("defaultldap.bind_dn", "NAL_BIND_DN")
-	v.BindEnv("defaultldap.bind_password", "NAL_BIND_PASSWORD")
-	v.BindEnv("defaultldap.user_search_filter", "NAL_SEARCH_FILTER")
-	v.BindEnv("defaultldap.user_search_base", "NAL_SEARCH_BASE")
-	v.BindEnv("defaultldap.user_dn_template", "NAL_USER_TEMPLATE")
-	v.BindEnv("defaultldap.tls_type", "NAL_LDAP_TLS")
-	v.BindEnv("defaultldap.certificate_authority", "NAL_LDAP_CA")
-	v.BindEnv("defaultldap.certificate", "NAL_LDAP_CERT")
-	v.BindEnv("defaultldap.key", "NAL_LDAP_KEY")
-	v.BindEnv("defaultldap.insecure", "NAL_LDAP_INSECURE")
-
-	v.BindEnv("http.bind_addr", "NAL_HTTP_ADDR")
-	v.BindEnv("http.port", "NAL_HTTP_PORT")
-	v.BindEnv("http.realm", "NAL_REALM")
-	v.BindEnv("http.authorization_header", "NAL_AUTHORIZATION")
-	v.BindEnv("http.authenticate_header", "NAL_AUTHENTICATE")
-	v.BindEnv("http.original_uri_header", "NAL_ORIGINAL_URI")
-	v.BindEnv("http.original_host_header", "NAL_ORIGINAL_HOST")
-	v.BindEnv("http.original_proto_header", "NAL_ORIGINAL_PROTO")
-	v.BindEnv("http.original_port_header", "NAL_ORIGINAL_PORT")
-	v.BindEnv("http.real_ip_header", "NAL_REAL_IP")
-	v.BindEnv("http.failed_auth_delay_seconds", "NAL_FAILED_DELAY")
-	v.BindEnv("http.shutdown_timeout_seconds", "NAL_SHUTDOWN_TIMEOUT")
-	v.BindEnv("http.https", "NAL_HTTPS")
-	v.BindEnv("http.certificate", "NAL_HTTPS_CERTIFICATE")
-	v.BindEnv("http.key", "NAL_HTTPS_KEY")
-
-	v.BindEnv("api.bind_addr", "NAL_API_ADDR")
-	v.BindEnv("api.port", "NAL_API_PORT")
-
-	v.BindEnv("cache.expires_seconds", "NAL_CACHE_EXPIRES")
-	v.BindEnv("cache.secret", "NAL_CACHE_SECRET")
-
-	v.BindEnv("redis.host", "NAL_REDIS_HOST")
-	v.BindEnv("redis.port", "NAL_REDIS_PORT")
-	v.BindEnv("redis.database", "NAL_REDIS_DATABASE")
-	v.BindEnv("redis.password", "NAL_REDIS_PASSWORD")
-	v.BindEnv("redis.poolsize", "NAL_REDIS_POOLSIZE")
-	v.BindEnv("redis.enabled", "NAL_REDIS_ENABLED")
-	v.BindEnv("redis.expires_seconds", "NAL_REDIS_EXPIRES")
+	v.SetDefault("signature.private_key_path", "")
+	v.SetDefault("signature.private_key_content", "")
 }
 
 func sclose(c chan bool) {
@@ -324,7 +326,7 @@ func Load(dirname, c_addr, c_prefix, c_token, c_dtctr string, notify_chan chan b
 	// we must close notify_chan in all cases
 	v := viper.New()
 	set_defaults(v)
-	set_environment_variables(v)
+	SetEnvMapping(v)
 	v.SetConfigName("nginx-auth-ldap")
 
 	dirname = strings.TrimSpace(dirname)
@@ -380,9 +382,47 @@ func Load(dirname, c_addr, c_prefix, c_token, c_dtctr string, notify_chan chan b
 	}
 
 	InjectDefaultLdapConfiguration(conf, &conf.Ldap)
+	GetRsaKeys(conf)
 
 	err = conf.Check()
 	return
+}
+
+func GetRsaKeys(c *GlobalConfig) error {
+	var err error
+	c.Signature.PrivateKeyPath = strings.TrimSpace(c.Signature.PrivateKeyPath)
+	c.Signature.PrivateKeyContent = strings.Trim(c.Signature.PrivateKeyContent, "\r\n\t ")
+
+	if len(c.Signature.PrivateKeyContent) == 0 && len(c.Signature.PrivateKeyPath) == 0 {
+		log.Log.Info("No private key is configured")
+		return nil
+	}
+
+	if len(c.Signature.PrivateKeyPath) > 0 && len(c.Signature.PrivateKeyContent) == 0 {
+		log.Log.WithField("private_key_path", c.Signature.PrivateKeyPath).Info("Reading private key from path")
+		content, err := ioutil.ReadFile(c.Signature.PrivateKeyPath)
+		if err != nil {
+			return errwrap.Wrapf("Failed to read the private key from path: {{err}}", err)
+		}
+		c.Signature.PrivateKeyContent = string(content)
+	}
+	c.Signature.PrivateKeyContent = strings.Trim(c.Signature.PrivateKeyContent, "\r\n\t ")
+
+	if len(c.Signature.PrivateKeyContent) == 0 {
+		log.Log.Warn("The private key is empty. Not configured.")
+		return nil
+	}
+
+	private_key, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(c.Signature.PrivateKeyContent))
+	if err != nil {
+		return errwrap.Wrapf("Error parsing the private key: {{err}}", err)
+	}
+
+	log.Log.Info("Private key has been correctly configured")
+	c.Signature.PrivateKey = private_key
+	c.Signature.PublicKey = &private_key.PublicKey
+	return nil
+
 }
 
 func ParseConfigFromConsul(vi *viper.Viper, prefix string, c map[string]string) {
@@ -416,59 +456,75 @@ func ParseLdapConfigFromConsul(conf *GlobalConfig, prefix string, c map[string]s
 	}
 	for bucket, m := range ldap_configs {
 		ldap_config := LdapConfig{}
+		gl := log.Log.WithField("ldap_id", bucket)
 		for k, v := range m {
+			l := gl.WithField(k, v)
 			switch k {
 			case "host":
 				ldap_config.Host = v
-				log.Log.WithField("ldap_id", bucket).WithField(k, v).Debug("LDAP configuration from Consul")
+				l.Debug("LDAP configuration from Consul")
 			case "port":
 				port, err := strconv.ParseInt(v, 10, 32)
 				if err == nil {
 					ldap_config.Port = uint32(port)
-					log.Log.WithField("ldap_id", bucket).WithField(k, v).Debug("LDAP configuration from Consul")
+					l.Debug("LDAP configuration from Consul")
 				} else {
 					log.Log.WithError(err).WithField(k, v).Warn("LDAP port in consul has wrong format. Ignoring.")
 				}
 			case "auth_type":
 				ldap_config.AuthType = v
-				log.Log.WithField("ldap_id", bucket).WithField(k, v).Debug("LDAP configuration from Consul")
+				l.Debug("LDAP configuration from Consul")
 			case "bind_dn":
 				ldap_config.BindDn = v
-				log.Log.WithField("ldap_id", bucket).WithField(k, v).Debug("LDAP configuration from Consul")
+				l.Debug("LDAP configuration from Consul")
 			case "bind_password":
 				ldap_config.BindPassword = v
-				log.Log.WithField("ldap_id", bucket).WithField(k, v).Debug("LDAP configuration from Consul")
+				l.Debug("LDAP configuration from Consul")
 			case "user_search_filter":
 				ldap_config.UserSearchFilter = v
-				log.Log.WithField("ldap_id", bucket).WithField(k, v).Debug("LDAP configuration from Consul")
+				l.Debug("LDAP configuration from Consul")
 			case "user_search_base":
 				ldap_config.UserSearchBase = v
-				log.Log.WithField("ldap_id", bucket).WithField(k, v).Debug("LDAP configuration from Consul")
+				l.Debug("LDAP configuration from Consul")
 			case "user_dn_template":
 				ldap_config.UserDnTemplate = v
-				log.Log.WithField("ldap_id", bucket).WithField(k, v).Debug("LDAP configuration from Consul")
+				l.Debug("LDAP configuration from Consul")
+			case "username_attribute":
+				ldap_config.UsernameAttribute = v
+				l.Debug("LDAP configuration from Consul")
+			case "mail_attribute":
+				ldap_config.MailAttribute = v
+				l.Debug("LDAP configuration from Consul")
+			case "return_mail":
+				ret, err := strconv.ParseBool(v)
+				if err == nil {
+					ldap_config.ReturnMail = ret
+					l.Debug("LDAP configuration from Consul")
+				} else {
+					l.WithError(err).Warn("LDAP 'return_mail' parameter in consul has wrong format. Ignoring.")
+				}
 			case "tls_type":
 				ldap_config.TlsType = v
-				log.Log.WithField("ldap_id", bucket).WithField(k, v).Debug("LDAP configuration from Consul")
+				l.Debug("LDAP configuration from Consul")
 			case "certificate_authority":
 				ldap_config.CA = v
-				log.Log.WithField("ldap_id", bucket).WithField(k, v).Debug("LDAP configuration from Consul")
+				l.Debug("LDAP configuration from Consul")
 			case "certificate":
 				ldap_config.Cert = v
-				log.Log.WithField("ldap_id", bucket).WithField(k, v).Debug("LDAP configuration from Consul")
+				l.Debug("LDAP configuration from Consul")
 			case "key":
 				ldap_config.Key = v
-				log.Log.WithField("ldap_id", bucket).WithField(k, v).Debug("LDAP configuration from Consul")
+				l.Debug("LDAP configuration from Consul")
 			case "insecure":
 				insecure, err := strconv.ParseBool(v)
 				if err == nil {
 					ldap_config.Insecure = insecure
-					log.Log.WithField("ldap_id", bucket).WithField(k, v).Debug("LDAP configuration from Consul")
+					l.Debug("LDAP configuration from Consul")
 				} else {
-					log.Log.WithError(err).WithField(k, v).Warn("LDAP insecure parameter in consul has wrong format. Ignoring.")
+					l.WithError(err).Warn("LDAP 'insecure' parameter in consul has wrong format. Ignoring.")
 				}
 			default:
-				log.Log.WithField(k, v).Warn("Ignoring LDAP parameter from Consul")
+				l.Warn("Ignoring unknown LDAP parameter from Consul")
 			}
 		}
 		conf.Ldap = append(conf.Ldap, ldap_config)
@@ -499,9 +555,23 @@ func InjectDefaultLdapConfiguration(conf *GlobalConfig, ldap_servers *[]LdapConf
 		if (*ldap_servers)[i].UserSearchBase == "" {
 			(*ldap_servers)[i].UserSearchBase = conf.DefaultLdap.UserSearchBase
 		}
+
 		if (*ldap_servers)[i].UserDnTemplate == "" {
 			(*ldap_servers)[i].UserDnTemplate = conf.DefaultLdap.UserDnTemplate
 		}
+
+		if (*ldap_servers)[i].UsernameAttribute == "" {
+			(*ldap_servers)[i].UsernameAttribute = conf.DefaultLdap.UsernameAttribute
+		}
+
+		if (*ldap_servers)[i].MailAttribute == "" {
+			(*ldap_servers)[i].MailAttribute = conf.DefaultLdap.MailAttribute
+		}
+
+		if !(*ldap_servers)[i].ReturnMail {
+			(*ldap_servers)[i].ReturnMail = conf.DefaultLdap.ReturnMail
+		}
+
 		if (*ldap_servers)[i].TlsType == "" {
 			(*ldap_servers)[i].TlsType = conf.DefaultLdap.TlsType
 		}
@@ -517,6 +587,7 @@ func InjectDefaultLdapConfiguration(conf *GlobalConfig, ldap_servers *[]LdapConf
 		if !(*ldap_servers)[i].Insecure {
 			(*ldap_servers)[i].Insecure = conf.DefaultLdap.Insecure
 		}
+
 	}
 }
 
