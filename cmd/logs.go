@@ -74,7 +74,7 @@ func logs() {
 	}
 
 	client := config.GetRedisClient()
-	mngr := stats.NewStatsManager(client)
+	mngr := stats.NewManager(client)
 	defer mngr.Close()
 
 	packs, err := mngr.GetLogs(from, to)
@@ -85,13 +85,11 @@ func logs() {
 	events := model.PackOfEvents{}
 	for _, t := range model.ResultTypes {
 		pack := *(packs[t])
-		for _, e := range pack {
-			events = append(events, e)
-		}
+		events = append(events, pack...)
 	}
 	sort.Sort(events)
 	for _, ev := range events {
-		if Json {
+		if LogInJSON {
 			b, err := json.Marshal(*ev)
 			if err == nil {
 				fmt.Println(string(b))
