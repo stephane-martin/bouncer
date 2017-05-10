@@ -47,14 +47,11 @@ func Authenticate(username string, password string, c *conf.GlobalConfig, discov
 	// try each LDAP configuration in a random order until we get a response
 	ldap_servers := []conf.LdapConfig{}
 	// statically configured LDAP servers
-	for _, server := range c.Ldap {
-		ldap_servers = append(ldap_servers, server)
-	}
+	ldap_servers = append(ldap_servers, c.Ldap...)
 	if discovery != nil {
 		// discovered LDAP servers
-		for _, server := range discovery.Get() {
-			ldap_servers = append(ldap_servers, server)
-		}
+		dyn_servers := discovery.Get()
+		ldap_servers = append(ldap_servers, dyn_servers...)
 	}
 	if len(ldap_servers) == 0 {
 		return "", "", &NoLdapServer{}	
@@ -126,14 +123,10 @@ func CheckLdapConn(c *conf.GlobalConfig, discovery *conf.DiscoveryLdap) error {
 	// check that we can connect to at least one LDAP server
 	var err error
 	ldap_servers := []conf.LdapConfig{}
-	for _, server := range c.Ldap {
-		ldap_servers = append(ldap_servers, server)
-	}
+	ldap_servers = append(ldap_servers, c.Ldap...)
 	if discovery != nil {
-		// discovered LDAP servers
-		for _, server := range discovery.Get() {
-			ldap_servers = append(ldap_servers, server)
-		}
+		dyn_servers := discovery.Get()
+		ldap_servers = append(ldap_servers, dyn_servers...)
 	}
 	if len(ldap_servers) == 0 {
 		return &NoLdapServer{}	
