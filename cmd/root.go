@@ -16,7 +16,7 @@ var LogFilename string
 var RequestLogFilename string
 var PidFilename string
 var Syslog bool
-var Json bool
+var LogInJSON bool
 var ConsulAddr string
 var ConsulPrefix string
 var ConsulToken string
@@ -49,7 +49,7 @@ func init() {
 	RootCmd.PersistentFlags().StringVar(&RequestLogFilename, "req-logfile", "", "if specified, write request logs to that file instead of stdout/stderr")
 	RootCmd.PersistentFlags().StringVar(&PidFilename, "pidfile", "", "if specified, write PID there")
 	RootCmd.PersistentFlags().BoolVar(&Syslog, "syslog", false, "if specified, send all logs to the local syslog instead of stdout/stderr")
-	RootCmd.PersistentFlags().BoolVar(&Json, "json", false, "if specified, write logs in JSON format")
+	RootCmd.PersistentFlags().BoolVar(&LogInJSON, "json", false, "if specified, write logs in JSON format")
 
 	RootCmd.PersistentFlags().StringVar(&ConsulAddr, "consul", "", "Consul scheme, host and port (eg http://A.B.C.D:PORT)")
 	RootCmd.PersistentFlags().StringVar(&ConsulPrefix, "prefix", "nginx-auth-ldap", "nginx-auth-ldap prefix in Consul KV")
@@ -61,7 +61,7 @@ func init() {
 }
 
 func init_logging() {
-	if Json {
+	if LogInJSON {
 		log.Log.Formatter = &logrus.JSONFormatter{}
 		log.RequestLog.Formatter = &logrus.JSONFormatter{}
 	}
