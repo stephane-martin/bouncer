@@ -57,17 +57,17 @@ var statsCmd = &cobra.Command{
 
 		if period > 0 {
 			period_name := fmt.Sprintf("last_%d_seconds", period)
-			all_ranges = map[string]int64{period_name: int64(period)}	
+			all_ranges = map[string]int64{period_name: int64(period)}
 		}
 
 		client := config.GetRedisClient()
-		mngr := stats.NewStatsManager(client)
+		mngr := stats.NewManager(client)
 		measures, err := mngr.GetStats(all_ranges)
 		if err != nil {
 			log.Log.WithError(err).Error("Error getting stats from Redis")
 			os.Exit(-1)
 		}
-		out, err := measures.Json()
+		out, err := measures.ExportJSON()
 		if err != nil {
 			log.Log.WithError(err).Error("Error marshalling stats")
 			os.Exit(-1)
