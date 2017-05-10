@@ -1,5 +1,7 @@
 package cmd
 
+// todo: /logout
+
 import (
 	"context"
 	"crypto/rand"
@@ -21,7 +23,6 @@ import (
 	logrus_syslog "github.com/Sirupsen/logrus/hooks/syslog"
 	"github.com/facebookgo/pidfile"
 	"github.com/hashicorp/errwrap"
-	//cache "github.com/patrickmn/go-cache"
 	"github.com/spf13/cobra"
 	"github.com/stephane-martin/nginx-auth-ldap/auth"
 	"github.com/stephane-martin/nginx-auth-ldap/conf"
@@ -60,12 +61,18 @@ func init() {
 
 func sighup() {
 	p, _ := os.FindProcess(os.Getpid())
-	p.Signal(syscall.SIGHUP)
+	err := p.Signal(syscall.SIGHUP)
+	if err != nil {
+		log.Log.WithError(err).Error("Error sending SIGHUP to self")
+	}
 }
 
 func sigusr() {
 	p, _ := os.FindProcess(os.Getpid())
-	p.Signal(syscall.SIGUSR1)
+	err := p.Signal(syscall.SIGUSR1)
+	if err != nil {
+		log.Log.WithError(err).Error("Error sending SIGUSR1 to self")
+	}
 }
 
 func serve() {
@@ -78,7 +85,7 @@ func serve() {
 		disable_colors = true
 	}
 
-	if Json {
+	if LogInJSON {
 		// logs formatted as JSON
 		log.Log.Formatter = &logrus.JSONFormatter{DisableTimestamp: disable_timestamps}
 		log.RequestLog.Formatter = &logrus.JSONFormatter{DisableTimestamp: disable_timestamps}
@@ -138,9 +145,8 @@ func serve() {
 		if err != nil {
 			log.Log.WithError(err).Fatal("Error writing PID file")
 		}
-		defer func() {
-			os.Remove(PidFilename)
-		}()
+		defer os.Remove(PidFilename)
+
 	}
 
 	// prevent SIGHUP and SIGURS1 to stop the program in all cases
@@ -196,12 +202,12 @@ func do_serve() bool {
 	}
 
 	// statistics manager. Initialized with a nil redis client, it will do nothing.
-	mngr := stats.NewStatsManager(nil)
+	mngr := stats.NewManager(nil)
 	defer mngr.Close()
 
 	if config.Redis.Enabled {
 		err = config.CheckRedisConn()
-if err != nil {
+		if err != nil {
 			log.Log.WithError(err).Error("Connection to Redis failed. Stats won't be available.")
 			config.Redis.Enabled = false
 		} else {
@@ -216,7 +222,7 @@ if err != nil {
 	}
 
 	// initialize (Redis stored) counters
-	for i, _ := range model.CounterNames {
+	for i := range model.CounterNames {
 		mngr.RegCounter(i)
 	}
 
@@ -244,28 +250,28 @@ if err != nil {
 		defer cancel_ctx()
 	}
 
-	server, done := StartHttp(config, discovery, mngr)
-	api, api_done := StartApi(config, discovery, mngr)
+	server, done := StartHTTP(config, discovery, mngr)
+	api, api_done := StartAPI(config, discovery, mngr)
 
 	if register_in_consul && len(ConsulAddr) > 0 {
 		// register the API service and the Auth service in Consul
 		tag_list := strings.Split(self_tags, ",")
-		ui_tag_list := strings.Split(api_tags, ",")
+		api_tag_list := strings.Split(api_tags, ",")
 		registry, err := consul.NewRegistry(ConsulAddr, ConsulToken, ConsulDatacenter)
 		if err != nil {
 			log.Log.WithError(err).Error("Failed to build the Consul registry")
 		} else {
-			ui_service_id, err := registry.Register(api_service_name, config.Api.BindAddr, int(config.Api.Port), "", ui_tag_list)
+			api_service_id, err := registry.Register(api_service_name, config.Api.BindAddr, int(config.Api.Port), "", api_tag_list)
 			if err != nil {
 				log.Log.WithError(err).Error("Failed to register the API service")
-			} else {
-				defer registry.Unregister(ui_service_id)
+			} else if len(api_service_id) > 0 {
+				defer registry.Unregister(api_service_id)
 			}
 			self_service_id, err := registry.Register(auth_service_name, config.Http.BindAddr, int(config.Http.Port), "", tag_list)
 			if err != nil {
 				log.Log.WithError(err).Error("Failed to register the auth service")
-			} else {
-defer registry.Unregister(self_service_id)
+			} else if len(self_service_id) > 0 {
+				defer registry.Unregister(self_service_id)
 			}
 		}
 	}
@@ -346,185 +352,273 @@ defer registry.Unregister(self_service_id)
 	}
 }
 
-func EventFromRequest(r *http.Request, config *conf.GlobalConfig) (e *model.RequestEvent) {
+// EventFromAuthRequest deals with the /auth API service
+func EventFromAuthRequest(r *http.Request, mngr *stats.Manager, config *conf.GlobalConfig) (e *model.RequestEvent) {
 	e = model.NewEmptyEvent()
+	e.Service = "auth"
 	e.Username = strings.TrimSpace(r.FormValue("username"))
 	e.Password = strings.TrimSpace(r.FormValue("password"))
+	e.ClientIP = r.RemoteAddr
 
-	e.Cookie = ""
-	cookie, err := r.Cookie(config.Http.NalCookieName)
-	if err == nil {
-		e.Cookie = cookie.Value
+	token := GetTokenFromRequest(r, mngr, config)
+
+	if token != nil && ((e.Username == "" && e.Password == "") || (e.Username == token.Username && e.Password == token.Password)) {
+		e.Username = token.Username
+		e.UsernameOut = token.UsernameOut
+		e.Email = token.Email
+		e.Password = token.Password
+		e.RetCode = 200
+		e.Message = "Auth is succesful (by NAL Cookie)"
+		e.Result = model.SUCCESS_AUTH_NAL_COOKIE
+		return
 	}
 
-	e.ClientIP = strings.TrimSpace(r.Header.Get(config.Http.RealIPHeader))
-	if len(e.ClientIP) == 0 {
-		e.ClientIP = r.RemoteAddr
-	}
-
-	uri := strings.TrimSpace(r.FormValue("uri"))
-	if len(uri) > 0 {
-		parsed_uri, err := url.Parse(uri)
-		if err != nil {
-			e.RetCode = 400
-			e.Result = model.INVALID_REQUEST
-			e.Message = fmt.Sprintf("The passed URI could not be parsed: %s", uri)
-			return e
-		}
-		e.Host = parsed_uri.Hostname()
-		e.Port = parsed_uri.Port()
-		e.Uri = parsed_uri.RequestURI()
-		e.Proto = parsed_uri.Scheme
-	}
-
-	token := e.VerifyCookie(config.Cache.SecretAsBytes)
-
-	if len(e.Username) == 0 {
-		if token == nil {
-			e.RetCode = 403
-			e.Result = model.FAIL_AUTH
-			e.Message = "Empty username"
-			return e
-		} else {
-			e.Username = token.Username
-			e.UsernameOut = token.UsernameOut
-			e.Email = token.Email
-			e.Password = token.Password
-			e.RetCode = 200
-			e.Message = "Auth is succesful (by NAL Cookie)"
-			e.Result = model.SUCCESS_AUTH_NAL_COOKIE
-			return e
-		}
-	}
-	// at this point we know that Username is not empty
-	if token != nil {
-		if e.Username == token.Username {
-			e.Username = token.Username
-			e.UsernameOut = token.UsernameOut
-			e.Password = token.Password
-			e.Email = token.Email
-			e.RetCode = 200
-			e.Message = "Auth is succesful (by NAL Cookie)"
-			e.Result = model.SUCCESS_AUTH_NAL_COOKIE
-			return e
-		}
-	}
-	// at this point,
-	// - either token is nil, and we'll have to check the password with LDAP
-	// - or token is provided, but the usernames are different: we have to check the new username/pass with LDAP also
-	if len(e.Password) == 0 {
+	if e.Username == "" || e.Password == "" {
+		e.Message = "Empty username or password"
 		e.RetCode = 403
 		e.Result = model.FAIL_AUTH
-		e.Message = "Empty password"
-		return e
+		return
 	}
 
 	return e
 }
 
-func EventFromSubRequest(r *http.Request, config *conf.GlobalConfig) (e *model.RequestEvent) {
+// EventFromLogoutRequest deals with interactive logout requests
+func EventFromLogoutRequest(r *http.Request, mngr *stats.Manager, config *conf.GlobalConfig) (e *model.RequestEvent) {
 	e = model.NewEmptyEvent()
+	e.Service = "logout"
+	e.Host = strings.TrimSpace(r.Header.Get(config.Http.OriginalServerHeader))
+	e.Port = strings.TrimSpace(r.Header.Get(config.Http.OriginalPortHeader))
+	e.Proto = strings.TrimSpace(r.Header.Get(config.Http.OriginalProtoHeader))
+	e.Uri = strings.TrimSpace(r.Header.Get(config.Http.OriginalUriHeader))
+	e.ClientIP = strings.TrimSpace(r.Header.Get(config.Http.RealIPHeader))
+
+	if e.ClientIP == "" {
+		e.ClientIP = r.RemoteAddr
+	}
+
+	s := strings.Split(r.Host, ":")
+	if e.Host == "" {
+		e.Host = s[0]
+	}
+	if e.Port == "" {
+		if len(s) >= 2 {
+			e.Port = s[1]
+		} else {
+			e.Port = "443"
+		}
+	}
+	if e.Proto == "" {
+		e.Proto = "https"
+	}
+	e.RetCode = 302
+	return e
+}
+
+// EventFromLoginRequest deals with interactive form login requests
+func EventFromLoginRequest(r *http.Request, mngr *stats.Manager, config *conf.GlobalConfig) (e *model.RequestEvent) {
+	e = model.NewEmptyEvent()
+	e.Service = "login"
+	e.Host = strings.TrimSpace(r.Header.Get(config.Http.OriginalServerHeader))
+	e.Port = strings.TrimSpace(r.Header.Get(config.Http.OriginalPortHeader))
+	e.Proto = strings.TrimSpace(r.Header.Get(config.Http.OriginalProtoHeader))
+	e.Uri = strings.TrimSpace(r.Header.Get(config.Http.OriginalUriHeader))
+	e.ClientIP = strings.TrimSpace(r.Header.Get(config.Http.RealIPHeader))
+
+	if e.ClientIP == "" {
+		e.ClientIP = r.RemoteAddr
+	}
+
+	s := strings.Split(r.Host, ":")
+	if e.Host == "" {
+		e.Host = s[0]
+	}
+	if e.Port == "" {
+		if len(s) >= 2 {
+			e.Port = s[1]
+		} else {
+			e.Port = "443"
+		}
+	}
+	if e.Proto == "" {
+		e.Proto = "https"
+	}
+	hostport := fmt.Sprintf("%s:%s", e.Host, e.Port)
+	u := &url.URL{Scheme: e.Proto, Host: hostport, Path: "/"}
+	default_url := u.String()
+
+	if e.Uri == "" {
+		e.Uri = strings.TrimSpace(r.FormValue("return_url"))
+	}
+	if e.Uri == "" {
+		e.Uri = default_url
+	} else {
+		// check that Uri is parsable
+		parsed, err := url.Parse(e.Uri)
+		if err != nil {
+			e.Uri = default_url
+		} else {
+			e.Uri = parsed.RequestURI()
+			if strings.HasPrefix(e.Uri, "/nal-login-page") {
+				e.Uri = default_url
+			} else {
+				u = &url.URL{Scheme: e.Proto, Host: hostport, Path: e.Uri}
+				e.Uri = u.String()
+			}
+		}
+	}
+
+	e.Username = strings.TrimSpace(r.FormValue("username"))
+	e.Password = strings.TrimSpace(r.FormValue("password"))
+
+	token := GetTokenFromRequest(r, mngr, config)
+	if token != nil && ((e.Username == "" && e.Password == "") || (e.Username == token.Username && e.Password == token.Password)) {
+		e.Username = token.Username
+		e.Password = token.Password
+		e.UsernameOut = token.UsernameOut
+		e.Email = token.Email
+		e.Message = "Auth is succesful (by NAL Cookie)"
+		e.RetCode = 200
+		e.Result = model.SUCCESS_AUTH_NAL_COOKIE
+		return
+	}
+
+	if e.Username == "" && e.Password == "" {
+		e.RetCode = 401
+		return
+	}
+
+	if e.Username == "" || e.Password == "" {
+		e.Message = "Username or password is empty"
+		e.RetCode = 403
+		e.Result = model.FAIL_AUTH
+		return
+	}
+
+	return
+}
+
+// EventFromSubRequest deals with subrequests from Nginx
+func EventFromSubRequest(r *http.Request, mngr *stats.Manager, config *conf.GlobalConfig) (e *model.RequestEvent) {
+	e = model.NewEmptyEvent()
+	e.Service = "nginx"
 	authorization := strings.TrimSpace(r.Header.Get(config.Http.AuthorizationHeader))
-	e.Host = strings.TrimSpace(r.Header.Get(config.Http.OriginalHostHeader))
+	e.Host = strings.TrimSpace(r.Header.Get(config.Http.OriginalServerHeader))
 	e.Uri = strings.TrimSpace(r.Header.Get(config.Http.OriginalUriHeader))
 	e.Port = strings.TrimSpace(r.Header.Get(config.Http.OriginalPortHeader))
 	e.Proto = strings.TrimSpace(r.Header.Get(config.Http.OriginalProtoHeader))
-
-	e.Cookie = ""
-	cookie, err := r.Cookie(config.Http.NalCookieName)
-	if err == nil {
-		e.Cookie = cookie.Value
-	}
 
 	e.ClientIP = strings.TrimSpace(r.Header.Get(config.Http.RealIPHeader))
 	if len(e.ClientIP) == 0 {
 		e.ClientIP = r.RemoteAddr
 	}
 
-	token := e.VerifyCookie(config.Cache.SecretAsBytes)
+	token := GetTokenFromRequest(r, mngr, config)
+
+	if len(authorization) == 0 && token != nil {
+		e.RetCode = 200
+		e.Result = model.SUCCESS_AUTH_NAL_COOKIE
+		e.Message = "Auth is succesful (by NAL Cookie)"
+		e.Username = token.Username
+		e.UsernameOut = token.UsernameOut
+		e.Email = token.Email
+		e.Password = token.Password
+		return
+	}
 
 	if len(authorization) == 0 {
-		if token == nil {
-			e.RetCode = 401
-			e.Result = model.NO_AUTH
-			e.Message = "No authorization header, no NAL cookie in request"
-		} else {
-			e.RetCode = 200
-			e.Result = model.SUCCESS_AUTH_NAL_COOKIE
-			e.Message = "Auth is succesful (by NAL Cookie)"
-			e.Username = token.Username
-			e.UsernameOut = token.UsernameOut
-			e.Email = token.Email
-			e.Password = token.Password
-		}
-		return e
+		e.RetCode = 401
+		e.Result = model.NO_AUTH
+		e.Message = "No authorization header, no cookie in request"
+		return
 	}
+
 	splits := strings.Split(authorization, " ")
 	if len(splits) != 2 {
 		e.RetCode = 400
 		e.Result = model.INVALID_REQUEST
 		e.Message = "Authorization header is present but has a bad format"
-		return e
+		return
 	}
 	if splits[0] != "Basic" {
 		e.RetCode = 400
 		e.Result = model.INVALID_REQUEST
 		e.Message = "Authorization header is present but does not begin with 'Basic'"
-		return e
+		return
 	}
 	encoded := splits[1]
 	if len(encoded) == 0 {
 		e.RetCode = 400
 		e.Result = model.INVALID_REQUEST
 		e.Message = "The encoded base64 is empty"
-		return e
+		return
 	}
 	decoded, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		e.RetCode = 400
 		e.Result = model.INVALID_REQUEST
 		e.Message = "Not properly base64 encoded"
-		return e
+		return
 	}
 	splits = strings.Split(string(decoded), ":")
 	if len(splits) != 2 {
 		e.RetCode = 400
 		e.Result = model.INVALID_REQUEST
 		e.Message = "The decoded base64 does not contain a ':'"
-		return e
+		return
 	}
 	e.Username = strings.TrimSpace(splits[0])
 	e.Password = strings.TrimSpace(splits[1])
 
-	if token != nil {
-		if e.Username == token.Username {
-			e.RetCode = 200
-			e.Result = model.SUCCESS_AUTH_NAL_COOKIE
-			e.Message = "Auth is succesful (by NAL Cookie)"
-			e.Username = token.Username
-			e.UsernameOut = token.UsernameOut
-			e.Email = token.Email
-			e.Password = token.Password
-			return e
-		}
+	if token != nil && ((e.Username == "" && e.Password == "") || (e.Username == token.Username && e.Password == token.Password)) {
+		e.Username = token.Username
+		e.Password = token.Password
+		e.RetCode = 200
+		e.Result = model.SUCCESS_AUTH_NAL_COOKIE
+		e.Message = "Auth is succesful (by NAL Cookie)"
+		e.UsernameOut = token.UsernameOut
+		e.Email = token.Email
+		return
 	}
-	if len(e.Username) == 0 {
+	if e.Username == "" || e.Password == "" {
 		e.RetCode = 403
 		e.Result = model.FAIL_AUTH
-		e.Message = "Empty username"
-		return e
+		e.Message = "Empty username or password"
+		return
 	}
-	if len(e.Password) == 0 {
-		e.RetCode = 403
-		e.Result = model.FAIL_AUTH
-		e.Message = "Empty password"
-		return e
-	}
-
-	return e
+	return
 }
 
-func StartApi(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *stats.StatsManager) (*http.Server, chan bool) {
+func GetTokenFromRequest(r *http.Request, mngr *stats.Manager, config *conf.GlobalConfig) *model.Token {
+	cookie, err := r.Cookie(config.Cache.CookieName)
+	if err != nil {
+		return nil
+	}
+
+	token := model.VerifyCookie(cookie, config.Cache.SecretAsBytes)
+	if token == nil {
+		log.Log.Warn("Provided cookie can't be verified")
+		return nil
+	}
+	if mngr.Client == nil {
+		return token
+	}
+
+	// check that we registered this cookie before
+	has_cookie, err := mngr.HasCookie(token.UsernameOut, cookie)
+	if err != nil {
+		log.Log.WithError(err).Error("Error checking cookie in Redis")
+		return nil
+	}
+	if has_cookie {
+		return token
+	} else {
+		log.Log.WithField("username", token.UsernameOut).Warn("Cookie not present in Redis")
+		return nil
+	}
+}
+
+func StartAPI(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *stats.Manager) (*http.Server, chan bool) {
 	mux := http.NewServeMux()
 	server := &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", config.Api.BindAddr, config.Api.Port),
@@ -536,7 +630,6 @@ func StartApi(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *st
 		w.WriteHeader(200)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write([]byte("<html><head><title>nginx-auth-ldap</title></head><body><h1>nginx-auth-ldap is running</h1></body></html>"))
-		return
 	}
 
 	health_handler := func(w http.ResponseWriter, r *http.Request) {
@@ -625,7 +718,7 @@ func StartApi(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *st
 			return
 		}
 
-		out, err := measurements.Json()
+		out, err := measurements.ExportJSON()
 		if err != nil {
 			log.Log.WithError(err).Error("Error marshalling statistics to JSON")
 			w.WriteHeader(500)
@@ -665,7 +758,7 @@ func StartApi(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *st
 
 }
 
-func StartHttp(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *stats.StatsManager) (*http.Server, chan bool) {
+func StartHTTP(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *stats.Manager) (*http.Server, chan bool) {
 
 	mux := http.NewServeMux()
 	server := &http.Server{
@@ -677,31 +770,10 @@ func StartHttp(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *s
 	request_event_chan := make(chan *model.RequestEvent, 100)
 
 	_request_event_handler := func(w http.ResponseWriter, ev *model.RequestEvent) {
-
 		// make sure we post an answer
 		defer func() {
-
-			if ev.RetCode == 401 {
-				w.Header().Add(config.Http.AuthenticateHeader, fmt.Sprintf("Basic realm=\"%s\"", config.Http.Realm))
-			}
-
-			// perform post-processing in a separate goroutine
-			request_event_chan <- ev
-
-			if ev.RetCode == 403 && config.Http.FailedAuthDelay > 0 {
-				// in auth context it is good practice to add a bit of random to counter time based attacks
-				n, err := rand.Int(rand.Reader, big.NewInt(1000))
-				if err != nil {
-					log.Log.WithError(err).Error("Error generating random number. Check your rand source.")
-				} else {
-					// sleep for some random time < 1s
-					time.Sleep(time.Duration(n.Int64()) * time.Millisecond)
-				}
-				// sleep (fixed time)
-				time.Sleep(time.Duration(config.Http.FailedAuthDelay) * time.Second)
-			}
-
-			if ev.RetCode == 200 {
+			switch ev.RetCode {
+			case 200:
 				// pass the authenticated user in the response headers
 				w.Header().Add(config.Http.RemoteUserHeader, ev.UsernameOut)
 
@@ -715,18 +787,6 @@ func StartHttp(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *s
 				basic := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", ev.UsernameOut, pass)))
 				w.Header().Add("Authorization", fmt.Sprintf("Basic %s", basic))
 
-				// return the "caching cookie" in the response headers
-				if ev.Result == model.SUCCESS_AUTH_NAL_COOKIE {
-					w.Header().Add(config.Http.NalCookieHeader, ev.Cookie)
-				} else {
-					nal_cookie, err := ev.GenerateCookie(config.Cache.SecretAsBytes, config.Cache.Expires)
-					if err != nil {
-						log.Log.WithError(err).Error("Error generating NAL Cookie")
-					} else {
-						w.Header().Add(config.Http.NalCookieHeader, nal_cookie)
-					}
-				}
-
 				// pass a JWT token representing the authenticated user
 				if config.Signature.PrivateKey != nil {
 					token, err := ev.GenerateBackendJwt(config.Signature.PrivateKey, auth_service_name)
@@ -736,33 +796,33 @@ func StartHttp(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *s
 						w.Header().Add(config.Http.JwtHeader, token)
 					}
 				}
-			} else {
-				w.Header().Add(config.Http.RemoteUserHeader, "")
-				w.Header().Add(config.Http.NalCookieHeader, "")
-			}
+				w.WriteHeader(200)
 
-			w.WriteHeader(ev.RetCode)
+			case 401:
+				w.Header().Add(config.Http.AuthenticateHeader, fmt.Sprintf("Basic realm=\"%s\"", config.Http.Realm))
+				w.WriteHeader(401)
+			case 400, 403:
+				// in auth context it is good practice to add a bit of random to counter time based attacks
+				n, err := rand.Int(rand.Reader, big.NewInt(1000))
+				if err != nil {
+					log.Log.WithError(err).Error("Error generating random number. Check your rand source.")
+				} else {
+					// sleep for some random time < 1s
+					time.Sleep(time.Duration(n.Int64()) * time.Millisecond)
+				}
+				// sleep (fixed time)
+				time.Sleep(time.Duration(config.Http.FailedAuthDelay) * time.Second)
+				w.WriteHeader(403)
+			default:
+				w.WriteHeader(ev.RetCode)
+			}
+			// perform post-processing in a separate goroutine
+			request_event_chan <- ev
 		}()
 
 		if ev.RetCode != 0 {
 			return
 		}
-
-		/*
-			if auth_cache != nil {
-				// fix: the cache should contain the whole resulting event
-				hmac_b = ev.Hmac(secret)
-				cached_hmac_b, found := auth_cache.Get(ev.Username)
-				if found {
-					if hmac.Equal(hmac_b, cached_hmac_b.([]byte)) {
-						ev.Message = "Auth is successful (cached)"
-						ev.Result = model.SUCCESS_AUTH_CACHE
-						ev.RetCode = 200
-						return
-					}
-				}
-			}
-		*/
 
 		// todo: measure auth time
 		username_out, email, err := auth.Authenticate(ev.Username, ev.Password, config, discovery)
@@ -773,9 +833,6 @@ func StartHttp(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *s
 			ev.Message = "Auth is succesful (not cached)"
 			ev.Result = model.SUCCESS_AUTH
 			ev.RetCode = 200
-			//if auth_cache != nil {
-			//	auth_cache.Add(ev.Username, hmac_b, cache.DefaultExpiration)
-			//}
 			return
 		}
 
@@ -806,13 +863,153 @@ func StartHttp(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *s
 	}
 
 	nginx_subrequest_handler := func(w http.ResponseWriter, r *http.Request) {
-		ev := EventFromSubRequest(r, config)
+		ev := EventFromSubRequest(r, mngr, config)
 		_request_event_handler(w, ev)
 	}
 
 	direct_auth_handler := func(w http.ResponseWriter, r *http.Request) {
-		ev := EventFromRequest(r, config)
+		ev := EventFromAuthRequest(r, mngr, config)
 		_request_event_handler(w, ev)
+	}
+
+	logout_handler := func(w http.ResponseWriter, r *http.Request) {
+		ev := EventFromLogoutRequest(r, mngr, config)
+		token := GetTokenFromRequest(r, mngr, config)
+		if token != nil {
+			// we know that r.Cookie will succeed, cause token != nil
+			old_cookie, _ := r.Cookie(config.Cache.CookieName)
+			err := mngr.DeleteCookie(token.UsernameOut, old_cookie)
+			if err != nil {
+				log.Log.WithError(err).Error("Error deleting cookie in /logout")
+			}
+			cookie := http.Cookie{
+				Name:     config.Cache.CookieName,
+				Value:    "",
+				Path:     "/",
+				Expires:  time.Unix(0, 0),
+				HttpOnly: true,
+			}
+			http.SetCookie(w, &cookie)
+		}
+
+		hostport := fmt.Sprintf("%s:%s", ev.Host, ev.Port)
+		u := &url.URL{Scheme: ev.Proto, Host: hostport, Path: "/"}
+		return_url := u.String()
+		w.Header().Add("Location", return_url)
+		w.WriteHeader(302)
+		request_event_chan <- ev
+	}
+
+	login_handler := func(w http.ResponseWriter, r *http.Request) {
+		ev := EventFromLoginRequest(r, mngr, config)
+
+		action_u := &url.URL{Scheme: ev.Proto, Host: fmt.Sprintf("%s:%s", ev.Host, ev.Port), Path: "/nal-login-page"}
+		action_url := action_u.String()
+
+		params := struct {
+			Error     bool
+			Action    string
+			ReturnURL string
+			Config    *conf.GlobalConfig
+		}{
+			false,
+			action_url,
+			ev.Uri,
+			config,
+		}
+
+		defer func() {
+			switch ev.RetCode {
+			case 200:
+				// redirect to destination
+				w.Header().Add("Location", ev.Uri)
+				w.WriteHeader(302)
+			case 403:
+				// in auth context it is good practice to add a bit of random to counter time based attacks
+				n, err := rand.Int(rand.Reader, big.NewInt(1000))
+				if err != nil {
+					log.Log.WithError(err).Error("Error generating random number. Check your rand source.")
+				} else {
+					// sleep for some random time < 1s
+					time.Sleep(time.Duration(n.Int64()) * time.Millisecond)
+				}
+				// sleep (fixed time)
+				time.Sleep(time.Duration(config.Http.FailedAuthDelay) * time.Second)
+
+				params.Error = true
+				config.Http.LoginTemplate.Execute(w, params)
+			case 401:
+				config.Http.LoginTemplate.Execute(w, params)
+			default:
+				w.WriteHeader(ev.RetCode)
+			}
+			request_event_chan <- ev
+		}()
+
+		if ev.RetCode != 0 {
+			return
+		}
+
+		switch r.Method {
+		case "GET", "HEAD":
+			ev.RetCode = 401
+			return
+		case "POST":
+			username_out, email, err := auth.Authenticate(ev.Username, ev.Password, config, discovery)
+			if err == nil {
+				// success: set cookie and redirect
+				ev.UsernameOut = username_out
+				ev.Email = email
+				ev.Message = "Auth is succesful (not cached)"
+				ev.Result = model.SUCCESS_AUTH
+				ev.RetCode = 200
+				cookie, err := ev.GenerateCookie(config.Cache.CookieName, config.Cache.SecretAsBytes, config.Cache.Expires)
+				if err != nil {
+					ev.Message = fmt.Sprintf("Error generating the NAL Cookie: %s", err)
+					ev.RetCode = 500
+					ev.Result = model.OP_ERROR
+					return
+				}
+				err = mngr.StoreCookie(ev.UsernameOut, cookie)
+				if err != nil {
+					ev.Message = fmt.Sprintf("Error storing cookie: %s", err)
+					ev.RetCode = 500
+					ev.Result = model.OP_ERROR
+					return
+				}
+				http.SetCookie(w, cookie)
+				return
+			}
+			if errwrap.ContainsType(err, new(auth.LdapOpError)) {
+				ev.Message = fmt.Sprintf("LDAP operational error: %s", err.Error())
+				ev.Result = model.OP_ERROR
+				ev.RetCode = 500
+				return
+			}
+
+			if errwrap.ContainsType(err, new(auth.LdapAuthError)) {
+				ev.Message = fmt.Sprintf("Auth failed: %s", err.Error())
+				ev.Result = model.FAIL_AUTH
+				ev.RetCode = 403
+				return
+			}
+
+			if errwrap.ContainsType(err, new(auth.NoLdapServer)) {
+				ev.Message = err.Error()
+				ev.Result = model.OP_ERROR
+				ev.RetCode = 500
+				return
+			}
+
+			ev.Message = fmt.Sprintf("Unexpected error: %s", err.Error())
+			ev.Result = model.OP_ERROR
+			ev.RetCode = 500
+			return
+		default:
+			ev.RetCode = 400
+			ev.Result = model.INVALID_REQUEST
+			return
+		}
 	}
 
 	health_handler := func(w http.ResponseWriter, r *http.Request) {
@@ -833,6 +1030,8 @@ func StartHttp(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *s
 	mux.HandleFunc("/nginx", nginx_subrequest_handler)
 	mux.HandleFunc("/auth", direct_auth_handler)
 	mux.HandleFunc("/health", health_handler)
+	mux.HandleFunc("/nal-login-page", login_handler)
+	mux.HandleFunc("/nal-logout-page", logout_handler)
 
 	go func() {
 		// postprocessing request events: log the request, archive it in redis, restart server if operational error
@@ -857,7 +1056,7 @@ func StartHttp(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *s
 				l.Info(ev.Message)
 			}
 			// write it to Redis
-			err := mngr.Store(ev)
+			err := mngr.StoreEvent(ev)
 			if err != nil {
 				log.Log.WithError(err).Error("Error happened when storing a request in Redis")
 			}

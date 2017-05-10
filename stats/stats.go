@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-redis/redis"
@@ -51,7 +53,7 @@ type PackOfMeasures struct {
 	A []interface{}
 }
 
-func (m *PackOfMeasures) Json() ([]byte, error) {
+func (m *PackOfMeasures) ExportJSON() ([]byte, error) {
 	s, err := json.Marshal(m.A)
 	if err != nil {
 		return nil, errwrap.Wrapf("Error marshalling measurements to JSON: {{err}}", err)
@@ -98,7 +100,7 @@ func (c *Counter) Val() (string, int64, error) {
 	name := fmt.Sprintf(COUNTER_TPL, c.Name)
 	s, err := c.Client.Get(name).Result()
 	if err != nil {
-		if err.Error() == "redis: nil" {
+		if err == redis.Nil {
 			return c.Name, 0, nil
 		}
 		return "", 0, err
@@ -110,30 +112,30 @@ func (c *Counter) Val() (string, int64, error) {
 	return c.Name, v, nil
 }
 
-type StatsManager struct {
+type Manager struct {
 	Client   *redis.Client
 	Counters map[string]*Counter
 }
 
-func NewStatsManager(c *redis.Client) *StatsManager {
-	return &StatsManager{Client: c, Counters: map[string]*Counter{}}
+func NewManager(c *redis.Client) *Manager {
+	return &Manager{Client: c, Counters: map[string]*Counter{}}
 }
 
-func (s *StatsManager) RegCounter(i model.CounterID) {
+func (s *Manager) RegCounter(i model.CounterID) {
 	s.Counters[model.CounterNames[i]] = &Counter{Client: s.Client, Name: model.CounterNames[i]}
 }
 
-func (s *StatsManager) Counter(i model.CounterID) *Counter {
+func (s *Manager) Counter(i model.CounterID) *Counter {
 	return s.Counters[model.CounterNames[i]]
 }
 
-func (s *StatsManager) Close() {
+func (s *Manager) Close() {
 	if s.Client != nil {
 		s.Client.Close()
 	}
 }
 
-func (s *StatsManager) Store(e *model.RequestEvent) error {
+func (s *Manager) StoreEvent(e *model.RequestEvent) error {
 	if s.Client == nil {
 		return nil
 	}
@@ -155,7 +157,56 @@ func (s *StatsManager) Store(e *model.RequestEvent) error {
 	return nil
 }
 
-func (s *StatsManager) GetLogs(from time.Time, to time.Time) (map[model.Result](*model.PackOfEvents), error) {
+func (s *Manager) HasCookie(username string, cookie *http.Cookie) (bool, error) {
+	if s.Client == nil {
+		return false, fmt.Errorf("No Redis client")
+	}
+	set := fmt.Sprintf("cookies-%s", username)
+	cookie_val := strings.TrimSpace(cookie.Value)
+	if cookie_val == "" {
+		return false, nil
+	}
+	timestamp, err := s.Client.ZScore(set, cookie_val).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return false, nil
+		}
+		return false, err
+	}
+	now := time.Now()
+	expire_date := time.Unix(0, int64(timestamp))
+	return now.Before(expire_date), nil
+}
+
+func (s *Manager) StoreCookie(username string, cookie *http.Cookie) error {
+	if s.Client == nil {
+		return nil
+	}
+	cookie_val := strings.TrimSpace(cookie.Value)
+	if cookie_val == "" {
+		return fmt.Errorf("can not store empty cookie")
+	}
+	set := fmt.Sprintf("cookies-%s", username)
+	score := float64(time.Now().Add(time.Duration(cookie.MaxAge) * time.Second).UnixNano())
+	return s.Client.ZAdd(set, redis.Z{Score: score, Member: cookie_val}).Err()
+}
+
+func (s *Manager) DeleteCookie(username string, cookie *http.Cookie) error {
+	if s.Client == nil {
+		return nil
+	}
+	cookie_val := strings.TrimSpace(cookie.Value)
+	if cookie_val == "" {
+		return nil
+	}
+	set := fmt.Sprintf("cookies-%s", username)
+	return s.Client.ZRem(set, cookie_val).Err()
+}
+
+func (s *Manager) GetLogs(from time.Time, to time.Time) (map[model.Result](*model.PackOfEvents), error) {
+	if s.Client == nil {
+		return nil, fmt.Errorf("No Redis client")
+	}
 	pipe := s.Client.TxPipeline()
 	cmds := map[model.Result]*redis.StringSliceCmd{}
 	for _, t := range model.ResultTypes {
@@ -186,7 +237,7 @@ func (s *StatsManager) GetLogs(from time.Time, to time.Time) (map[model.Result](
 	return packs_of_events, nil
 }
 
-func (s *StatsManager) GetHitsForPeriod(from int64, to int64) (*HitsMeasure, error) {
+func (s *Manager) GetHitsForPeriod(from int64, to int64) (*HitsMeasure, error) {
 	if s.Client == nil {
 		return nil, fmt.Errorf("No Redis client")
 	}
@@ -208,7 +259,7 @@ func (s *StatsManager) GetHitsForPeriod(from int64, to int64) (*HitsMeasure, err
 	return &measurement, nil
 }
 
-func (s *StatsManager) GetStats(all_ranges map[string]int64) (*PackOfMeasures, error) {
+func (s *Manager) GetStats(all_ranges map[string]int64) (*PackOfMeasures, error) {
 	if s.Client == nil {
 		return nil, fmt.Errorf("No Redis client")
 	}

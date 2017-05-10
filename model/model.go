@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -22,7 +23,7 @@ import (
 type CounterID uint8
 
 const (
-	LDAP_CONN_ERROR = iota
+	LDAP_CONN_ERROR CounterID = iota
 	RESTARTS
 	HTTP_ABRUPT_TERM
 	API_ABRUPT_TERM
@@ -75,12 +76,12 @@ type RequestEvent struct {
 	Uri       string    `json:"uri"`
 	Port      string    `json:"port"`
 	Proto     string    `json:"proto"`
+	ClientIP  string    `json:"client_ip"`
 	RetCode   int       `json:"retcode"`
 	Timestamp time.Time `json:"timestamp"`
 	Message   string    `json:"message"`
 	Result    Result    `json:"result"`
-	ClientIP  string    `json:"client_ip"`
-	Cookie    string    `json:"-"`
+	Service   string    `json:"service"`
 }
 
 const EventStringFormat string = `Timestamp %s
@@ -96,7 +97,17 @@ Message: %s
 `
 
 func (e *RequestEvent) String() string {
-	return fmt.Sprintf(EventStringFormat, e.Timestamp.Format(time.RFC3339), e.Proto, e.Host, e.Port, e.Uri, e.ClientIP, e.Username, e.RetCode, e.Result, e.Message)
+	return fmt.Sprintf(EventStringFormat,
+		e.Timestamp.Format(time.RFC3339),
+		e.Proto,
+		e.Host,
+		e.Port,
+		e.Uri,
+		e.ClientIP,
+		e.Username,
+		e.RetCode,
+		e.Result,
+		e.Message)
 }
 
 func (e *RequestEvent) GenerateBackendJwt(key *rsa.PrivateKey, issuer string) (string, error) {
@@ -117,9 +128,9 @@ func (e *RequestEvent) GenerateBackendJwt(key *rsa.PrivateKey, issuer string) (s
 	return token_s, nil
 }
 
-func (e *RequestEvent) GenerateCookie(secret []byte, d time.Duration) (string, error) {
+func (e *RequestEvent) GenerateCookie(name string, secret []byte, d time.Duration) (*http.Cookie, error) {
 	if len(secret) < 32 {
-		return "", fmt.Errorf("secret has less than 32 chars")
+		return nil, fmt.Errorf("secret has less than 32 chars")
 	}
 	token := Token{
 		Identity{
@@ -133,31 +144,39 @@ func (e *RequestEvent) GenerateCookie(secret []byte, d time.Duration) (string, e
 	}
 	b, err := json.Marshal(token)
 	if err != nil {
-		return "", errwrap.Wrapf("Error generating token/json marshalling: {{err}}", err)
+		return nil, errwrap.Wrapf("Error generating token/json marshalling: {{err}}", err)
 	}
 	var secretb [32]byte
 	copy(secretb[:], secret[:32])
 	var nonce [24]byte
 	_, err = rand.Read(nonce[:])
 	if err != nil {
-		return "", errwrap.Wrapf("Error generating token/crypto random source: {{err}}", err)
+		return nil, errwrap.Wrapf("Error generating token/crypto random source: {{err}}", err)
 	}
 	encrypted := secretbox.Seal(nonce[:], b, &nonce, &secretb)
-	return base64.URLEncoding.EncodeToString(encrypted), nil
+	encoded := base64.URLEncoding.EncodeToString(encrypted)
+	cookie := http.Cookie{
+		Name:     name,
+		Value:    encoded,
+		Path:     "/",
+		MaxAge:   int(d.Seconds()),
+		HttpOnly: true,
+	}
+	return &cookie, nil
 }
 
-func (e *RequestEvent) VerifyCookie(secret []byte) *Token {
+func VerifyCookie(cookie *http.Cookie, secret []byte) *Token {
 	l := log.Log.WithField("fun", "VerifyCookie")
 	if len(secret) < 32 {
 		l.Warn("secret is too short")
 		return nil
 	}
-	cookie := strings.TrimSpace(e.Cookie)
-	if len(cookie) == 0 {
-		l.Debug("No NAL Cookie")
+	cookie_val := strings.TrimSpace(cookie.Value)
+	if len(cookie_val) == 0 {
+		l.Debug("Cookie is empty")
 		return nil
 	}
-	encrypted, err := base64.URLEncoding.DecodeString(cookie)
+	encrypted, err := base64.URLEncoding.DecodeString(cookie_val)
 	if err != nil {
 		l.Warn("NAL Cookie is not base64 encoded")
 		return nil
