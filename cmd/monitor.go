@@ -56,7 +56,7 @@ func monitor() {
 	}
 
 	client := config.GetRedisClient()
-	mngr := stats.NewStatsManager(client)
+	mngr := stats.NewManager(client)
 	defer mngr.Close()
 	now := time.Now()
 	pubsub := client.Subscribe(stats.NOTIFICATIONS_REDIS_CHAN)
@@ -73,13 +73,11 @@ func monitor() {
 		events := model.PackOfEvents{}
 		for _, t := range model.ResultTypes {
 			pack := *(packs[t])
-			for _, e := range pack {
-				events = append(events, e)
-			}
+			events = append(events, pack...)
 		}
 		sort.Sort(events)
 		for _, ev := range events {
-			if Json {
+			if LogInJSON {
 				b, err := json.Marshal(*ev)
 				if err == nil {
 					fmt.Println(string(b))
@@ -108,7 +106,7 @@ func monitor() {
 				err := json.Unmarshal([]byte(msg.Payload), &ev)
 				if err != nil {
 					log.Log.WithError(err).WithField("event", msg.Payload).Warn("Error decoding an event from Redis")
-				} else if Json {
+				} else if LogInJSON {
 					fmt.Println(msg.Payload)
 				} else {
 					fmt.Println(&ev)
