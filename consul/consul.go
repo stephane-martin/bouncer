@@ -32,10 +32,10 @@ func NewClient(addr, token, datacenter string) (*api.Client, error) {
 	addr = strings.TrimSpace(addr)
 	if strings.HasPrefix(addr, "http://") {
 		config.Scheme = "http"
-		addr = addr[7:len(addr)]
+		addr = addr[7:]
 	} else if strings.HasPrefix(addr, "https://") {
 		config.Scheme = "https"
-		addr = addr[8:len(addr)]
+		addr = addr[8:]
 	} else {
 		return nil, fmt.Errorf("consul addr must start with 'http://' or 'https://'")
 	}
@@ -195,7 +195,6 @@ func getTree(client *api.Client, prefix string, waitIndex uint64) (map[string]st
 	return results, meta.LastIndex, nil
 }
 
-
 type Registry struct {
 	client *api.Client
 }
@@ -251,6 +250,7 @@ func (r *Registry) Register(name string, ip_s string, port int, check_url string
 			Interval:      "30s",
 			Timeout:       "2s",
 			TLSSkipVerify: true,
+			Status:        "passing",
 		},
 	}
 
