@@ -1,154 +1,23 @@
 package conf
 
 import (
-	"bytes"
 	"crypto/rand"
-	"crypto/rsa"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"html/template"
 	"io/ioutil"
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
-	"github.com/BurntSushi/toml"
 	"github.com/dgrijalva/jwt-go"
-	"github.com/go-redis/redis"
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/errwrap"
 	"github.com/spf13/viper"
 	"github.com/stephane-martin/nginx-auth-ldap/consul"
 	"github.com/stephane-martin/nginx-auth-ldap/log"
 )
-
-type GlobalConfig struct {
-	Ldap        []LdapConfig    `mapstructure:"ldap" toml:"ldap"`
-	DefaultLdap LdapConfig      `mapstructure:"defaultldap" toml:"defaultldap"`
-	Http        HttpConfig      `mapstructure:"http" toml:"http"`
-	Api         ApiConfig       `mapstructure:"api" toml:"api"`
-	Cache       CacheConfig     `mapstructure:"cache" toml:"cache"`
-	Redis       RedisConfig     `mapstructure:"redis" toml:"redis"`
-	Signature   SignatureConfig `mapstructure:"signature" toml:"signature"`
-}
-
-type LdapConfig struct {
-	Host              string `mapstructure:"host" toml:"host"`
-	Port              uint32 `mapstructure:"port" toml:"port"`
-	AuthType          string `mapstructure:"auth_type" toml:"auth_type"`
-	BindDn            string `mapstructure:"bind_dn" toml:"bind_dn"`
-	BindPassword      string `mapstructure:"bind_password" toml:"bind_password"`
-	UserSearchFilter  string `mapstructure:"user_search_filter" toml:"user_search_filter"`
-	UserSearchBase    string `mapstructure:"user_search_base" toml:"user_search_base"`
-	UserDnTemplate    string `mapstructure:"user_dn_template" toml:"user_dn_template"`
-	UsernameAttribute string `mapstructure:"username_attribute" toml:"username_attribute"`
-	MailAttribute     string `mapstructure:"mail_attribute" toml:"mail_attribute"`
-	ReturnMail        bool   `mapstructure:"return_mail" toml:"return_mail"`
-	TlsType           string `mapstructure:"tls_type" toml:"tls_type"`
-	CA                string `mapstructure:"certificate_authority" toml:"certificate_authority"`
-	Cert              string `mapstructure:"certificate" toml:"certificate"`
-	Key               string `mapstructure:"key" toml:"key"`
-	Insecure          bool   `mapstructure:"insecure" toml:"insecure"`
-}
-
-func (l *LdapConfig) String() string {
-	buf := new(bytes.Buffer)
-	encoder := toml.NewEncoder(buf)
-	encoder.Encode(*l)
-	return buf.String()
-}
-
-type ApiConfig struct {
-	BindAddr string `mapstructure:"bind_addr" toml:"bind_addr"`
-	Port     uint32 `mapstructure:"port" toml:"port"`
-}
-
-type HttpConfig struct {
-	BindAddr            string `mapstructure:"bind_addr" toml:"bind_addr"`
-	Port                uint32 `mapstructure:"port" toml:"port"`
-	Realm               string `mapstructure:"realm" toml:"realm"`
-	AuthorizationHeader string `mapstructure:"authorization_header" toml:"authorization_header"`
-	AuthenticateHeader  string `mapstructure:"authenticate_header" toml:"authenticate_header"`
-	OriginalUriHeader   string `mapstructure:"original_uri_header" toml:"original_uri_header"`
-	OriginalHostHeader  string `mapstructure:"original_host_header" toml:"original_host_header"`
-	OriginalPortHeader  string `mapstructure:"original_port_header" toml:"original_port_header"`
-	OriginalProtoHeader string `mapstructure:"original_proto_header" toml:"original_proto_header"`
-	RealIPHeader        string `mapstructure:"real_ip_header" toml:"real_ip_header"`
-	NalCookieName       string `mapstructure:"nal_cookie_name" toml:"nal_cookie_name"`
-	NalCookieHeader     string `mapstructure:"nal_cookie_header" toml:"nal_cookie_header"`
-	RemoteUserHeader    string `mapstructure:"remote_user_header" toml:"remote_user_header"`
-	JwtHeader           string `mapstructure:"jwt_header" toml:"jwt_header"`
-	FailedAuthDelay     uint32 `mapstructure:"failed_auth_delay_seconds" toml:"failed_auth_delay_seconds"`
-	ShutdownTimeout     uint32 `mapstructure:"shutdown_timeout_seconds" toml:"shutdown_timeout_seconds"`
-	Https               bool   `mapstructure:"https" toml:"https"`
-	Certificate         string `mapstructure:"certificate" toml:"certificate"`
-	Key                 string `mapstructure:"key" toml:"key"`
-	MaskPassword        bool   `mapstructure:"mask_password" toml:"mask_password"`
-}
-
-type CacheConfig struct {
-	Expires       time.Duration `mapstructure:"expires" toml:"expires"`
-	Secret        string        `mapstructure:"secret" toml:"secret"`
-	SecretAsBytes []byte        `toml:"-"`
-}
-
-type RedisConfig struct {
-	Host     string `mapstructure:"host" toml:"host"`
-	Port     uint32 `mapstructure:"port" toml:"port"`
-	Database uint8  `mapstructure:"database" toml:"database"`
-	Password string `mapstructure:"password" toml:"password"`
-	Poolsize uint32 `mapstructure:"poolsize" toml:"poolsize"`
-	Enabled  bool   `mapstructure:"enabled" toml:"enabled"`
-	Expires  int64  `mapstructure:"expires_seconds" toml:"expires_seconds"`
-}
-
-type SignatureConfig struct {
-	PrivateKeyPath string `mapstructure:"private_key_path" toml:"private_key_path"`
-	//PublicKeyPath string `mapstructure:"public_key_path" toml:"public_key_path"`
-	PrivateKeyContent string `mapstructure:"private_key_content" toml:"-"`
-	//PublicKeyContent string `mapstructure:"public_key_content" toml:"-"`
-	PrivateKey *rsa.PrivateKey `toml:"-"`
-	PublicKey  *rsa.PublicKey  `toml:"-"`
-}
-
-func New() *GlobalConfig {
-	return &GlobalConfig{
-		Ldap:  []LdapConfig{},
-		Http:  HttpConfig{},
-		Cache: CacheConfig{},
-	}
-}
-
-func (c *GlobalConfig) Export() string {
-	buf := new(bytes.Buffer)
-	encoder := toml.NewEncoder(buf)
-	encoder.Encode(*c)
-	return buf.String()
-}
-
-func (c *GlobalConfig) CheckRedisConn() error {
-	conn := c.GetRedisClient()
-	defer conn.Close()
-	return conn.Ping().Err()
-}
-
-func (c *GlobalConfig) GetRedisOptions() (opts *redis.Options) {
-	opts = &redis.Options{
-		Addr:     fmt.Sprintf("%s:%d", c.Redis.Host, c.Redis.Port),
-		Network:  "tcp",
-		DB:       int(c.Redis.Database),
-		PoolSize: int(c.Redis.Poolsize),
-	}
-	if len(c.Redis.Password) > 0 {
-		opts.Password = c.Redis.Password
-	}
-	return opts
-}
-
-func (c *GlobalConfig) GetRedisClient() *redis.Client {
-	return redis.NewClient(c.GetRedisOptions())
-}
 
 func (c *GlobalConfig) Check() error {
 
@@ -230,63 +99,6 @@ func (c *GlobalConfig) Check() error {
 	}
 
 	return nil
-}
-
-func set_defaults(v *viper.Viper) {
-	v.SetDefault("defaultldap.host", "127.0.0.1")
-	v.SetDefault("defaultldap.port", 389)
-	v.SetDefault("defaultldap.auth_type", "directbind")
-	v.SetDefault("defaultldap.bind_dn", "")
-	v.SetDefault("defaultldap.bind_password", "")
-	v.SetDefault("defaultldap.user_search_filter", "(uid=%s)")
-	v.SetDefault("defaultldap.user_search_base", "ou=users,dc=example,dc=org")
-	v.SetDefault("defaultldap.user_dn_template", "uid=%s,ou=users,dc=example,dc=org")
-	v.SetDefault("defaultldap.username_attribute", "uid")
-	v.SetDefault("defaultldap.mail_attribute", "mail")
-	v.SetDefault("defaultldap.return_mail", false)
-	v.SetDefault("defaultldap.tls_type", "none")
-	v.SetDefault("defaultldap.certificate_authority", "")
-	v.SetDefault("defaultldap.certificate", "")
-	v.SetDefault("defaultldap.key", "")
-	v.SetDefault("defaultldap.insecure", false)
-
-	v.SetDefault("http.bind_addr", "0.0.0.0")
-	v.SetDefault("http.port", 8080)
-	v.SetDefault("http.realm", "Example Realm")
-	v.SetDefault("http.authorization_header", "Authorization")
-	v.SetDefault("http.authenticate_header", "WWW-Authenticate")
-	v.SetDefault("http.original_uri_header", "X-Original-Uri")
-	v.SetDefault("http.original_host_header", "X-Forwarded-Host")
-	v.SetDefault("http.original_port_header", "X-Forwarded-Port")
-	v.SetDefault("http.original_proto_header", "X-Forwarded-Proto")
-	v.SetDefault("http.real_ip_header", "X-Real-Ip")
-	v.SetDefault("http.nal_cookie_header", "X-Nal-Cookie")
-	v.SetDefault("http.remote_user_header", "X-Remote-User")
-	v.SetDefault("http.jwt_header", "X-Remote-Jwt")
-	v.SetDefault("http.nal_cookie_name", "NGINX_AUTH_LDAP")
-	v.SetDefault("http.failed_auth_delay_seconds", 2)
-	v.SetDefault("http.shutdown_timeout_seconds", 2)
-	v.SetDefault("http.https", false)
-	v.SetDefault("http.certificate", "")
-	v.SetDefault("http.key", "")
-	v.SetDefault("http.mask_password", false)
-
-	v.SetDefault("api.bind_addr", "127.0.0.1")
-	v.SetDefault("api.port", 8081)
-
-	v.SetDefault("cache.expires", "5m")
-	v.SetDefault("cache.secret", "")
-
-	v.SetDefault("redis.host", "127.0.0.1")
-	v.SetDefault("redis.port", 6379)
-	v.SetDefault("redis.database", 0)
-	v.SetDefault("redis.password", "")
-	v.SetDefault("redis.poolsize", 10)
-	v.SetDefault("redis.enabled", false)
-	v.SetDefault("redis.expires_seconds", 86400)
-
-	v.SetDefault("signature.private_key_path", "")
-	v.SetDefault("signature.private_key_content", "")
 }
 
 func sclose(c chan bool) {
@@ -382,10 +194,38 @@ func Load(dirname, c_addr, c_prefix, c_token, c_dtctr string, notify_chan chan b
 	}
 
 	InjectDefaultLdapConfiguration(conf, &conf.Ldap)
-	GetRsaKeys(conf)
-
+	err = GetRsaKeys(conf)
+	if err != nil {
+		return
+	}
+	err = GetLoginTpl(conf)
+	if err != nil {
+		return
+	}
 	err = conf.Check()
 	return
+}
+
+func GetLoginTpl(c *GlobalConfig) error {
+	c.Http.LoginTemplateContent = strings.Trim(c.Http.LoginTemplateContent, "\r\n\t ")
+	c.Http.LoginTemplatePath = strings.TrimSpace(c.Http.LoginTemplatePath)
+	if len(c.Http.LoginTemplateContent) == 0 {
+		if len(c.Http.LoginTemplatePath) > 0 {
+			content, err := ioutil.ReadFile(c.Http.LoginTemplatePath)
+			if err != nil {
+				log.Log.WithError(err).WithField("filename", c.Http.LoginTemplatePath).Error("Error reading the login template file")
+			} else {
+				c.Http.LoginTemplateContent = strings.Trim(string(content), "\r\n\t ")
+			}
+		}
+		if len(c.Http.LoginTemplateContent) == 0 {
+			c.Http.LoginTemplateContent = LOGIN_TPL_C
+		}
+	}
+	t := template.New("login")
+	var err error
+	c.Http.LoginTemplate, err = t.Parse(c.Http.LoginTemplateContent)
+	return err
 }
 
 func GetRsaKeys(c *GlobalConfig) error {
@@ -430,7 +270,7 @@ func ParseConfigFromConsul(vi *viper.Viper, prefix string, c map[string]string) 
 
 	for k, v := range c {
 		if strings.HasPrefix(k, c_prefix) {
-			k = strings.Replace(strings.Trim(k[len(c_prefix):len(k)], "/"), "/", ".", -1)
+			k = strings.Replace(strings.Trim(k[len(c_prefix):], "/"), "/", ".", -1)
 			log.Log.WithField(k, v).Debug("Config from consul")
 			vi.Set(k, v)
 		}
@@ -444,7 +284,7 @@ func ParseLdapConfigFromConsul(conf *GlobalConfig, prefix string, c map[string]s
 
 	for k, v := range c {
 		if strings.HasPrefix(k, l_prefix) {
-			k = strings.Replace(strings.Trim(k[len(l_prefix):len(k)], "/"), "/", ".", -1)
+			k = strings.Replace(strings.Trim(k[len(l_prefix):], "/"), "/", ".", -1)
 			splits := strings.SplitN(k, ".", 2)
 			bucket := splits[0]
 			k = splits[1]
@@ -533,7 +373,7 @@ func ParseLdapConfigFromConsul(conf *GlobalConfig, prefix string, c map[string]s
 
 func InjectDefaultLdapConfiguration(conf *GlobalConfig, ldap_servers *[]LdapConfig) {
 	// inject defaults into LDAP configurations
-	for i, _ := range *ldap_servers {
+	for i := range *ldap_servers {
 		if (*ldap_servers)[i].Host == "" {
 			(*ldap_servers)[i].Host = conf.DefaultLdap.Host
 		}
@@ -591,17 +431,6 @@ func InjectDefaultLdapConfiguration(conf *GlobalConfig, ldap_servers *[]LdapConf
 	}
 }
 
-type DiscoveryLdap struct {
-	conf    *GlobalConfig
-	client  *api.Client
-	service string
-	tag     string
-	mu      *sync.RWMutex
-	servers []LdapConfig
-	stop    chan bool
-	updates chan []consul.ServiceAddress
-}
-
 func NewDiscoveryLdap(c *GlobalConfig, c_addr, c_token, c_dtctr, c_tag, c_service string) (*DiscoveryLdap, error) {
 	client, err := consul.NewClient(c_addr, c_token, c_dtctr)
 	if err != nil {
@@ -624,11 +453,15 @@ func (d *DiscoveryLdap) Watch() {
 	d.updates = make(chan []consul.ServiceAddress, 100)
 	d.stop = consul.WatchServices(d.client, d.service, d.tag, d.updates)
 	wait_first := make(chan bool, 1)
+	first := true
 	go func() {
 		for {
 			servers := []LdapConfig{}
 			updates, more := <-d.updates
-			close(wait_first)
+			if first {
+				close(wait_first)
+				first = false
+			}
 			if !more {
 				return
 			}
