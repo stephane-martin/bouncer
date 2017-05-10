@@ -124,7 +124,7 @@ func FindPublicKey() *rsa.PublicKey {
 	}
 
 	if c.Signature.PublicKey == nil {
-		fmt.Sprintf("No public key was provided to verify the token signature")
+		fmt.Println("No public key was provided to verify the token signature")
 		os.Exit(-1)
 	}
 	return c.Signature.PublicKey
