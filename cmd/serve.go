@@ -422,7 +422,6 @@ func EventFromLoginRequest(r *http.Request, mngr *stats.Manager, config *conf.Gl
 	e.Host = strings.TrimSpace(r.Header.Get(config.Http.OriginalServerHeader))
 	e.Port = strings.TrimSpace(r.Header.Get(config.Http.OriginalPortHeader))
 	e.Proto = strings.TrimSpace(r.Header.Get(config.Http.OriginalProtoHeader))
-	e.Uri = strings.TrimSpace(r.Header.Get(config.Http.OriginalUriHeader))
 	e.ClientIP = strings.TrimSpace(r.Header.Get(config.Http.RealIPHeader))
 
 	if e.ClientIP == "" {
@@ -447,8 +446,9 @@ func EventFromLoginRequest(r *http.Request, mngr *stats.Manager, config *conf.Gl
 	u := &url.URL{Scheme: e.Proto, Host: hostport, Path: "/"}
 	default_url := u.String()
 
+	e.Uri = strings.TrimSpace(r.FormValue("return_url"))
 	if e.Uri == "" {
-		e.Uri = strings.TrimSpace(r.FormValue("return_url"))
+		e.Uri = strings.TrimSpace(r.Header.Get(config.Http.OriginalUriHeader))
 	}
 	if e.Uri == "" {
 		e.Uri = default_url
