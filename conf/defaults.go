@@ -33,6 +33,7 @@ func set_defaults(v *viper.Viper) {
 	v.SetDefault("http.real_ip_header", "X-Real-Ip")
 	v.SetDefault("http.remote_user_header", "X-Remote-User")
 	v.SetDefault("http.jwt_header", "X-Remote-Jwt")
+	v.SetDefault("http.login_uri_header", "X-Login-Uri")
 	v.SetDefault("http.failed_auth_delay_seconds", 2)
 	v.SetDefault("http.shutdown_timeout_seconds", 2)
 	v.SetDefault("http.https", false)

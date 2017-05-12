@@ -903,7 +903,11 @@ func StartHTTP(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *s
 	login_handler := func(w http.ResponseWriter, r *http.Request) {
 		ev := EventFromLoginRequest(r, mngr, config)
 
-		action_u := &url.URL{Scheme: ev.Proto, Host: fmt.Sprintf("%s:%s", ev.Host, ev.Port), Path: "/nal-login-page"}
+		login_url := strings.TrimSpace(r.Header.Get(config.Http.LoginUriHeader))
+		if login_url == "" {
+			login_url = "/nal-login-page"
+		}
+		action_u := &url.URL{Scheme: ev.Proto, Host: fmt.Sprintf("%s:%s", ev.Host, ev.Port), Path: login_url}
 		action_url := action_u.String()
 
 		params := struct {

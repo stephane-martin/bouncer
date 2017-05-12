@@ -33,6 +33,7 @@ func SetEnvMapping(v *viper.Viper) {
 	v.BindEnv("http.real_ip_header", "NAL_REAL_IP_HEADER")
 	v.BindEnv("http.remote_user_header", "NAL_REMOTE_USER_HEADER")
 	v.BindEnv("http.jwt_header", "NAL_JWT_HEADER")
+	v.BindEnv("http.login_uri_header", "NAL_LOGIN_URI_HEADER")
 	v.BindEnv("http.failed_auth_delay_seconds", "NAL_FAILED_DELAY")
 	v.BindEnv("http.shutdown_timeout_seconds", "NAL_SHUTDOWN_TIMEOUT")
 	v.BindEnv("http.https", "NAL_HTTPS")

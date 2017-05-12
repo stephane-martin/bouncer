@@ -64,6 +64,7 @@ type HttpConfig struct {
 	OriginalServerHeader string             `mapstructure:"original_server_header" toml:"original_server_header"`
 	OriginalPortHeader   string             `mapstructure:"original_port_header" toml:"original_port_header"`
 	OriginalProtoHeader  string             `mapstructure:"original_proto_header" toml:"original_proto_header"`
+	LoginUriHeader       string             `mapstructure:"login_uri_header" toml:"login_uri_header"`
 	RealIPHeader         string             `mapstructure:"real_ip_header" toml:"real_ip_header"`
 	RemoteUserHeader     string             `mapstructure:"remote_user_header" toml:"remote_user_header"`
 	JwtHeader            string             `mapstructure:"jwt_header" toml:"jwt_header"`
