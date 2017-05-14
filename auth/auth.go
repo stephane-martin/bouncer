@@ -6,9 +6,9 @@ import (
 	"math/rand"
 
 	"github.com/hashicorp/errwrap"
-	"github.com/stephane-martin/nginx-auth-ldap/conf"
-	"github.com/stephane-martin/nginx-auth-ldap/log"
-	mytls "github.com/stephane-martin/nginx-auth-ldap/tls"
+	"github.com/stephane-martin/bouncer/conf"
+	"github.com/stephane-martin/bouncer/log"
+	mytls "github.com/stephane-martin/bouncer/tls"
 	ldap "gopkg.in/ldap.v2"
 )
 

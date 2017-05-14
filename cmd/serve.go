@@ -24,13 +24,13 @@ import (
 	"github.com/facebookgo/pidfile"
 	"github.com/hashicorp/errwrap"
 	"github.com/spf13/cobra"
-	"github.com/stephane-martin/nginx-auth-ldap/auth"
-	"github.com/stephane-martin/nginx-auth-ldap/conf"
-	"github.com/stephane-martin/nginx-auth-ldap/consul"
-	"github.com/stephane-martin/nginx-auth-ldap/janitor"
-	"github.com/stephane-martin/nginx-auth-ldap/log"
-	"github.com/stephane-martin/nginx-auth-ldap/model"
-	"github.com/stephane-martin/nginx-auth-ldap/stats"
+	"github.com/stephane-martin/bouncer/auth"
+	"github.com/stephane-martin/bouncer/conf"
+	"github.com/stephane-martin/bouncer/consul"
+	"github.com/stephane-martin/bouncer/janitor"
+	"github.com/stephane-martin/bouncer/log"
+	"github.com/stephane-martin/bouncer/model"
+	"github.com/stephane-martin/bouncer/stats"
 )
 
 // serveCmd represents the serve command
@@ -52,9 +52,9 @@ var self_tags string
 
 func init() {
 	RootCmd.AddCommand(serveCmd)
-	serveCmd.Flags().BoolVar(&register_in_consul, "register", false, "Register nginx-auth-ldap services in Consul")
-	serveCmd.Flags().StringVar(&auth_service_name, "service-name", "nginx-auth-ldap", "The Consul name to register for the Auth service")
-	serveCmd.Flags().StringVar(&api_service_name, "api-service-name", "nginx-auth-ldap-api", "The Consul name to register for the API service")
+	serveCmd.Flags().BoolVar(&register_in_consul, "register", false, "Register bouncer services in Consul")
+	serveCmd.Flags().StringVar(&auth_service_name, "service-name", "bouncer", "The Consul name to register for the Auth service")
+	serveCmd.Flags().StringVar(&api_service_name, "api-service-name", "bouncer-api", "The Consul name to register for the API service")
 	serveCmd.Flags().StringVar(&self_tags, "tags", "", "Comma-separated list of Consul tags to set for the Auth service")
 	serveCmd.Flags().StringVar(&api_tags, "api-tags", "", "Comma-separated list of Consul tags to set for the API service")
 }
@@ -629,7 +629,7 @@ func StartAPI(config *conf.GlobalConfig, discovery *conf.DiscoveryLdap, mngr *st
 		// just reply that the server is alive
 		w.WriteHeader(200)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte("<html><head><title>nginx-auth-ldap</title></head><body><h1>nginx-auth-ldap is running</h1></body></html>"))
+		w.Write([]byte("<html><head><title>bouncer</title></head><body><h1>bouncer is running</h1></body></html>"))
 	}
 
 	health_handler := func(w http.ResponseWriter, r *http.Request) {

@@ -6,15 +6,16 @@ import (
 	"time"
 
 	"github.com/go-redis/redis"
-	"github.com/stephane-martin/nginx-auth-ldap/conf"
-	"github.com/stephane-martin/nginx-auth-ldap/log"
-	"github.com/stephane-martin/nginx-auth-ldap/model"
+	"github.com/stephane-martin/bouncer/conf"
+	"github.com/stephane-martin/bouncer/log"
+	"github.com/stephane-martin/bouncer/model"
+	"github.com/stephane-martin/bouncer/stats"
 )
 
 type Janitor struct {
-	Config       *conf.GlobalConfig
-	Client       *redis.Client
-	stop_chan    chan bool
+	Config    *conf.GlobalConfig
+	Client    *redis.Client
+	stop_chan chan bool
 }
 
 func NewJanitor(config *conf.GlobalConfig, client *redis.Client) (janitor *Janitor) {
@@ -55,7 +56,7 @@ func (j *Janitor) clean() {
 	log.Log.Debug("Janitor: wake up to clean old records in Redis")
 	limit := strconv.FormatInt(time.Now().UnixNano()-(j.Config.Redis.Expires*1000000000), 10)
 	for _, t := range model.ResultTypes {
-		sset := fmt.Sprintf("nginx-auth-ldap-sset-%d", t)
+		sset := fmt.Sprintf(stats.SET_REQUESTS_TPL, t)
 		result, err := j.Client.ZRemRangeByScore(sset, "-inf", limit).Result()
 		if err != nil {
 			log.Log.WithError(err).Error("Janitor: error deleting old entries in Redis")

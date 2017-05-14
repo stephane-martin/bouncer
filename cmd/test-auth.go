@@ -5,9 +5,9 @@ import (
 
 	"github.com/segmentio/go-prompt"
 	"github.com/spf13/cobra"
-	"github.com/stephane-martin/nginx-auth-ldap/auth"
-	"github.com/stephane-martin/nginx-auth-ldap/conf"
-	"github.com/stephane-martin/nginx-auth-ldap/log"
+	"github.com/stephane-martin/bouncer/auth"
+	"github.com/stephane-martin/bouncer/conf"
+	"github.com/stephane-martin/bouncer/log"
 )
 
 var username string

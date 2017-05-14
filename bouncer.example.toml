@@ -1,5 +1,5 @@
-# nginx-auth-ldap example configuration file
-# should be saved as nginx-auth-ldap.toml, for example in /etc
+# 'bouncer' example configuration file
+# should be saved as bouncer.toml, for example in /etc
 
 # Multiple LDAP servers can be defined in [[ldap]] sections
 [[ldap]]
@@ -94,16 +94,9 @@ key = "" # default ""
 mask_password = false # whether to mask the user password in the passed Authorization header
 
 [cache]
-# Authorization header is sent by the browser with each request.
-# The LDAP bind may be quite long (for example if there is some latency between
-# nginx and the LDAP server).
-# nginx-auth-ldap can cache successful authentication, so that the LDAP directory
-# is not requested each time a request arrives
-# A successful authentication is cached for N seconds
-# put to 0 to disable caching
-expires = "5m" # default "5m" = 5 minutes
-
-# secret to encrypt the nginx-auth-ldap "caching cookie"
+# for cookie based authentication, cookie duration before it expires
+expires = "24h" # default 24 hours
+# secret to encrypt the bouncer "caching cookie"
 # if 'secret' is empty, a random secret will be generated in each run
 secret = "" # default ""
 
@@ -119,7 +112,7 @@ port = 6379
 database = 0
 # redis password (leave empty for anonymous)
 password = ""
-# nginx-auth-ldap uses go-redis with a pool of connections to Redis. Size of
+# bouncer uses go-redis with a pool of connections to Redis. Size of
 # the pool.
 poolsize = 10
 # each incoming request is logged in a sorted set in redis.

@@ -15,8 +15,8 @@ import (
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/errwrap"
 	"github.com/spf13/viper"
-	"github.com/stephane-martin/nginx-auth-ldap/consul"
-	"github.com/stephane-martin/nginx-auth-ldap/log"
+	"github.com/stephane-martin/bouncer/consul"
+	"github.com/stephane-martin/bouncer/log"
 )
 
 func (c *GlobalConfig) Check() error {
@@ -139,7 +139,7 @@ func Load(dirname, c_addr, c_prefix, c_token, c_dtctr string, notify_chan chan b
 	v := viper.New()
 	set_defaults(v)
 	SetEnvMapping(v)
-	v.SetConfigName("nginx-auth-ldap")
+	v.SetConfigName("bouncer")
 
 	dirname = strings.TrimSpace(dirname)
 	if len(dirname) > 0 {

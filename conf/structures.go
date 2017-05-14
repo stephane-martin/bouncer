@@ -9,7 +9,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/hashicorp/consul/api"
-	"github.com/stephane-martin/nginx-auth-ldap/consul"
+	"github.com/stephane-martin/bouncer/consul"
 )
 
 type GlobalConfig struct {

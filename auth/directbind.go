@@ -4,8 +4,8 @@ import (
 	"fmt"
 
 	"github.com/hashicorp/errwrap"
-	"github.com/stephane-martin/nginx-auth-ldap/conf"
-	"github.com/stephane-martin/nginx-auth-ldap/log"
+	"github.com/stephane-martin/bouncer/conf"
+	"github.com/stephane-martin/bouncer/log"
 	ldap "gopkg.in/ldap.v2"
 )
 

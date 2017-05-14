@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/stephane-martin/nginx-auth-ldap/cmd"
+	"github.com/stephane-martin/bouncer/cmd"
 )
 
 func main() {

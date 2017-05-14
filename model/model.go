@@ -17,7 +17,7 @@ import (
 	"github.com/dgrijalva/jwt-go"
 	"github.com/hashicorp/errwrap"
 	"github.com/satori/go.uuid"
-	"github.com/stephane-martin/nginx-auth-ldap/log"
+	"github.com/stephane-martin/bouncer/log"
 )
 
 type CounterID uint8

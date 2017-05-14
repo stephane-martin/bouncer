@@ -5,8 +5,8 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-	"github.com/stephane-martin/nginx-auth-ldap/conf"
-	"github.com/stephane-martin/nginx-auth-ldap/log"
+	"github.com/stephane-martin/bouncer/conf"
+	"github.com/stephane-martin/bouncer/log"
 )
 
 var disco bool
@@ -15,7 +15,7 @@ var printconfigCmd = &cobra.Command{
 	Use:   "print-config",
 	Short: "Print the current configuration as TOML",
 	Long: `You can use print-config to check what is the real configuration
-that nginx-auth-ldap will use, merging your configuration and the defaults.`,
+that bouncer will use, merging your configuration and the defaults.`,
 	Run: func(cmd *cobra.Command, args []string) {
 
 		config, _, err := conf.Load(ConfigDir, ConsulAddr, ConsulPrefix, ConsulToken, ConsulDatacenter, nil)

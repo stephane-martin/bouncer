@@ -50,7 +50,7 @@ func set_defaults(v *viper.Viper) {
 	v.SetDefault("cache.expires", "24h")
 	v.SetDefault("cache.secret", "")
 	v.SetDefault("cache.cookie_header", "X-Nal-Cookie")
-	v.SetDefault("cache.cookie_name", "NGINX_AUTH_LDAP")
+	v.SetDefault("cache.cookie_name", "BOUNCER_COOKIE")
 
 	v.SetDefault("redis.host", "127.0.0.1")
 	v.SetDefault("redis.port", 6379)

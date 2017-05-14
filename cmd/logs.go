@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/stephane-martin/nginx-auth-ldap/conf"
-	"github.com/stephane-martin/nginx-auth-ldap/log"
-	"github.com/stephane-martin/nginx-auth-ldap/model"
-	"github.com/stephane-martin/nginx-auth-ldap/stats"
+	"github.com/stephane-martin/bouncer/conf"
+	"github.com/stephane-martin/bouncer/log"
+	"github.com/stephane-martin/bouncer/model"
+	"github.com/stephane-martin/bouncer/stats"
 )
 
 // logsCmd represents the logs command

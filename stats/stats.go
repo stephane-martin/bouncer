@@ -12,14 +12,14 @@ import (
 
 	"github.com/go-redis/redis"
 	"github.com/hashicorp/errwrap"
-	"github.com/stephane-martin/nginx-auth-ldap/log"
-	"github.com/stephane-martin/nginx-auth-ldap/model"
+	"github.com/stephane-martin/bouncer/log"
+	"github.com/stephane-martin/bouncer/model"
 )
 
-const TOTAL_REQUESTS = "nginx-auth-ldap-nb-total-requests"
-const SET_REQUESTS_TPL = "nginx-auth-ldap-sset-%d"
-const COUNTER_TPL = "nginx-auth-ldap-counter-%s"
-const NOTIFICATIONS_REDIS_CHAN = "nginx-auth-ldap-notifications"
+const TOTAL_REQUESTS = "bouncer-nb-total-requests"
+const SET_REQUESTS_TPL = "bouncer-sset-%d"
+const COUNTER_TPL = "bouncer-counter-%s"
+const NOTIFICATIONS_REDIS_CHAN = "bouncer-notifications"
 
 type HitsMeasure struct {
 	Period        string `json:"period"`

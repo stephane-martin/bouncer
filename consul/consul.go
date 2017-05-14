@@ -9,7 +9,7 @@ import (
 
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/errwrap"
-	"github.com/stephane-martin/nginx-auth-ldap/log"
+	"github.com/stephane-martin/bouncer/log"
 )
 
 func copy_map(m map[string]string) map[string]string {
