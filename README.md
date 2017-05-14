@@ -296,7 +296,7 @@ To define a RSA private key, provide the path to a PEM-encoded file in
 
 (To generate such a private key, you can use `nginx-auth-ldap generate-rsa-keys`.)
 
-# Nginx configuration example
+# HTTP Basic Authentication: Nginx configuration example
 
 Adapt it to your needs.
 
@@ -307,7 +307,6 @@ server {
         auth_request /nginx;
 
         # gather info from nginx-auth-ldap HTTP response headers
-        auth_request_set $nalcookie $upstream_http_x_nal_cookie;
         auth_request_set $remote $upstream_http_x_remote_user;
         auth_request_set $auth $upstream_http_authorization;
         auth_request_set $backendjwt $upstream_http_x_remote_jwt;
@@ -319,11 +318,6 @@ server {
         proxy_set_header X-REMOTE-JWT $backendjwt;
         proxy_set_header Authorization $auth;
 
-        # This cookie contains an internal nginx-auth-ldap encrypted token that's
-        # used to avoid to bind to the LDAP servers in subsequent requests.
-        # The expiration period for that token is defined by `cache.expires`.
-        # It is a kind of "authentication caching" mechanism.
-        add_header Set-Cookie "NGINX_AUTH_LDAP=$nalcookie;Path=/;HttpOnly";
     }
 
     location = /nginx {
@@ -343,6 +337,82 @@ server {
         proxy_set_header X-Forwarded-Port 443;
         proxy_set_header X-Forwarded-Proto https;
     }
+}
+```
+
+# Cookie-based Authentication: Nginx configuration example
+
+```nginx
+server {
+    listen 4343 ssl http2;
+    server_name myapp.example.org;
+
+    ...
+
+    location / {
+        error_page 401 =200 /nal-login-page;
+        auth_request /nginx;
+
+        # gather info from nginx-auth-ldap HTTP response headers
+        auth_request_set $remote $upstream_http_x_remote_user;
+        auth_request_set $auth $upstream_http_authorization;
+        auth_request_set $backendjwt $upstream_http_x_remote_jwt;
+
+        # pass info to the backend service
+        proxy_set_header REMOTE_USER $remote;
+        proxy_set_header REMOTE-USER $remote;
+        proxy_set_header X-REMOTE-USER $remote;
+        proxy_set_header X-REMOTE-JWT $backendjwt;
+        proxy_set_header Authorization $auth;
+    }
+
+    location /login {
+        proxy_pass http://NGINX-AUTH-LDAP-HOST:NGINX-AUTH-LDAP-PORT/nal-login-page;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Host $http_host:443;
+        proxy_set_header X-Forwarded-Server $http_host;
+        proxy_set_header X-Forwarded-Port 443;
+        proxy_set_header Forwarded "for=$remote_addr; proto=https";
+        proxy_set_header X-Scheme https;
+        proxy_set_header X-Forwarded-Ssl on;
+        proxy_set_header X-Url-Scheme https;
+        proxy_set_header X-Original-Uri $request_uri;
+        proxy_set_header X-Login-Uri $uri;
+    }
+
+    location /logout {
+        proxy_pass http://NGINX-AUTH-LDAP-HOST:NGINX-AUTH-LDAP-PORT/nal-logout-page;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Host $http_host:443;
+        proxy_set_header X-Forwarded-Server $http_host;
+        proxy_set_header X-Forwarded-Port 443;
+        proxy_set_header Forwarded "for=$remote_addr; proto=https";
+        proxy_set_header X-Scheme https;
+        proxy_set_header X-Forwarded-Ssl on;
+        proxy_set_header X-Url-Scheme https;
+        proxy_set_header X-Original-Uri $request_uri;
+    }
+
+    location = /nginx {
+        internal;
+        proxy_pass http://NGINX-AUTH-LDAP-HOST:NGINX-AUTH-LDAP-PORT;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header X-Forwarded-Server $http_host;
+        proxy_set_header X-Forwarded-Host $http_host:443;
+        proxy_set_header X-Original-URI $request_uri;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Forwarded "for=$remote_addr; proto=https";
+        proxy_set_header X-Forwarded-Port 443;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+
 }
 ```
 
