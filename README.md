@@ -5,7 +5,7 @@ authentication module, that performs HTTP requests to a backend service to check
 a user is allowed to access the ressource
 (see [ngx_http_auth_request_module](http://nginx.org/en/docs/http/ngx_http_auth_request_module.html)).
 
-`bouncer` provides such a backend to perform LDAP authentication/
+`bouncer` provides such a backend.
 
 # Features
 
@@ -22,6 +22,9 @@ schemes are supported: "direct LDAP bind" or "LDAP search and bind".
 
 Multiple LDAP directories can be defined. In that case, `bouncer` will
 load-balance the LDAP requests among them.
+
+On the front-end side, the user credentials can be given as "HTTP Basic"
+authentication headers, or via a classical form/session cookie.
 
 ## Backend services
 
